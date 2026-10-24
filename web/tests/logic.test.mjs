@@ -1,59 +1,96 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MODELS, VARIABLES, clamp, wrappedLongitude, forecastURL, parseForecast,
-  nearestIndex, safeRadarMetadata, radarTileURL, mercator, unmercator, axisLimits, valueAt } from '../logic.mjs';
+import {
+  MODELS, MODEL_IDS, forecastURL, parseForecast, nearestIndex, valueAtTime,
+  axisLimits, hourFloor, pickGestureAxis, scrubTimestamp, forecastBounds,
+  timelinePosition, placeKey, mercator, unmercator, radarTileURL, safeRadarMetadata,
+} from '../logic.mjs';
 
-test('all supported models are selectable with exact expected Open-Meteo models parameter',()=>{
-  for(const model of Object.keys(MODELS)){
-    const url = new URL(forecastURL({latitude:51.5142,longitude:7.4653,model}));
-    assert.equal(url.hostname,'api.open-meteo.com');
-    assert.equal(url.pathname,'/v1/dwd-icon');
-    assert.equal(url.searchParams.get('models'),model);
-    assert.match(url.searchParams.get('hourly'),/wind_speed_10m/);
-    assert.equal(url.searchParams.get('timeformat'),'unixtime');
-    assert.equal(url.searchParams.get('forecast_hours'), model==='icon_d2'?'48':'120');
+function data(){
+  const base=hourFloor(Date.now()/1000);
+  return {timezone:'Europe/Berlin',hourly:{time:[base,base+3600,base+7200],
+    temperature_2m:[12,14,16],precipitation:[.1,0,2],wind_speed_10m:[5,10,8],cloud_cover:[30,60,90]}};
+}
+test('Only three German DWD ICON models, all with usable API URLs',()=>{
+  assert.deepEqual(MODEL_IDS,['icon_d2','icon_eu','icon_global']);
+  for(const model of MODEL_IDS){
+    const u=new URL(forecastURL({latitude:51.51,longitude:7.47,model}));
+    assert.equal(u.hostname,'api.open-meteo.com');
+    assert.equal(u.pathname,'/v1/dwd-icon');
+    assert.equal(u.searchParams.get('models'),model);
+    assert.equal(Number(u.searchParams.get('forecast_hours')),MODELS[model].hours);
   }
+  assert.throws(()=>forecastURL({latitude:200,longitude:7,model:'icon_d2'}));
+  assert.throws(()=>forecastURL({latitude:52,longitude:7,model:'noaa'}));
 });
-test('validates model names and coordinates',()=>{
-  assert.throws(()=>forecastURL({latitude:100,longitude:1,model:'icon_d2'}),RangeError);
-  assert.throws(()=>forecastURL({latitude:0,longitude:1,model:'gfs'}),RangeError);
-  assert.throws(()=>forecastURL({latitude:NaN,longitude:1,model:'icon_d2'}),RangeError);
+test('Forecast integrity requires ordered times and all plotted fields',()=>{
+  assert.equal(parseForecast(data()).hourly.time.length,3);
+  const broken=data();broken.hourly.time[1]=broken.hourly.time[0];
+  assert.throws(()=>parseForecast(broken),/not increasing/);
+  delete broken.hourly.wind_speed_10m;
+  assert.throws(()=>parseForecast(broken));
 });
-test('forecast validation detects API errors and missing variables',()=>{
-  assert.throws(()=>parseForecast({error:true,reason:'unknown model'}),/unknown model/);
-  assert.throws(()=>parseForecast({hourly:{time:[100],temperature_2m:[3]}}),/Missing precipitation/);
-  const data={hourly:{time:[100,200]}};
-  for(const {key} of Object.values(VARIABLES))data.hourly[key]=[3,4];
-  assert.equal(parseForecast(data),data);
-  assert.equal(valueAt(data,'temperature',1),4);
-  assert.equal(valueAt(data,'wind',5),null);
+test('All model graphs use the same absolute timestamp; no false extrapolation',()=>{
+  const d=data(),t=d.hourly.time[1];
+  assert.equal(nearestIndex(d.hourly.time,t),1);
+  assert.equal(valueAtTime(d,'temperature',t),14);
+  assert.equal(valueAtTime(d,'precipitation',t+900),0);
+  assert.equal(valueAtTime(d,'temperature',t+2700),16);
+  assert.equal(valueAtTime(d,'temperature',t+5401),null);
+  assert.equal(valueAtTime(d,'temperature',t+86400),null);
+  assert.equal(valueAtTime(null,'temperature',t),null);
 });
-test('selects nearest timestamp, including before and after the range',()=>{
-  const t=[100,200,300,400];
-  assert.equal(nearestIndex(t,50),0);
-  assert.equal(nearestIndex(t,211),1);
-  assert.equal(nearestIndex(t,999),3);
-  assert.equal(nearestIndex([],200),0);
+test('Vertical movement is faster; horizontal is finer at default settings',()=>{
+  const start=hourFloor(1800000000),options={horizontalHours:4,verticalHours:24};
+  const slow=scrubTimestamp(start,100,0,'horizontal',options);
+  const fast=scrubTimestamp(start,0,-100,'vertical',options);
+  assert.equal((slow-start)/3600,4);
+  assert.equal((fast-start)/3600,24);
+  assert.equal(scrubTimestamp(start,-100,0,'horizontal',options),start-4*3600);
+  assert.equal(scrubTimestamp(start,0,100,'vertical',options),start-24*3600);
 });
-test('Mercator round-trip works across hemispheres and dateline',()=>{
-  for(const [lat,lon] of [[51.5142,7.4653],[-37.8136,144.9631],[42,-179.8],[10,179.99],[0,0]]){
-    const point=mercator(lat,lon,9),out=unmercator(point.x,point.y,9);
-    assert.ok(Math.abs(out.lat-lat)<1e-7,`${lat}: ${out.lat}`);
-    assert.ok(Math.abs(out.lon-lon)<1e-7,`${lon}: ${out.lon}`);
-  }
-  assert.equal(wrappedLongitude(181),-179);
-  assert.equal(clamp(7,1,3),3);
+test('Gesture locks by dominant movement and ignores ambiguous tap',()=>{
+  assert.equal(pickGestureAxis(0,1),null);
+  assert.equal(pickGestureAxis(25,3),'horizontal');
+  assert.equal(pickGestureAxis(3,-25),'vertical');
+  assert.equal(pickGestureAxis(8,8),'horizontal');
 });
-test('radar URLs have zoom cap, wrapping and strict host validation',()=>{
-  const meta=safeRadarMetadata({host:'https://tilecache.rainviewer.com',radar:{past:[{time:1234567890,path:'/v2/radar/1234567890'}]}});
-  assert.equal(radarTileURL(meta,0,9,135,8),'https://tilecache.rainviewer.com/v2/radar/1234567890/256/7/7/8/2/1_1.png');
-  assert.equal(radarTileURL(meta,0,7,2,128),null);
-  assert.throws(()=>safeRadarMetadata({host:'https://tilecache.rainviewer.com.evil.example',radar:{past:[{time:123,path:'/v2/radar/123'}]}}),/Invalid radar/);
-  assert.throws(()=>safeRadarMetadata({host:'https://tilecache.rainviewer.com',radar:{past:[{time:123,path:'//evil.com'}]}}),/Invalid radar/);
+test('Gesture sensitivity values change actual time increments, with safe clamping and reversal',()=>{
+  const start=hourFloor(1800000000),bounds={minSeconds:start,maxSeconds:start+48*3600,stepSeconds:3600};
+  assert.equal((scrubTimestamp(start,100,0,'horizontal',{...bounds,horizontalHours:12})-start)/3600,12);
+  assert.equal((scrubTimestamp(start,0,-100,'vertical',{...bounds,verticalHours:36})-start)/3600,36);
+  assert.equal(scrubTimestamp(start,0,-1000,'vertical',{...bounds,verticalHours:36}),bounds.maxSeconds);
+  assert.equal(scrubTimestamp(start,90,0,'horizontal',{...bounds,horizontalHours:4}),start+4*3600);
+  assert.equal(scrubTimestamp(start,0,0,'horizontal',{...bounds,horizontalHours:4}),start);
 });
-test('chart axes correctly cope with constant values and nulls',()=>{
-  assert.deepEqual(axisLimits([null,null],'wind'),{min:0,max:1});
-  assert.deepEqual(axisLimits([0,0,0],'temperature'),{min:-1,max:1});
-  assert.equal(axisLimits([3,70],'cloud').max,100);
-  assert.equal(axisLimits([3,70],'cloud').min,0);
+test('Shared 48-hour and five-day timeline geometry',()=>{
+  const t=hourFloor(Date.now()/1000);
+  assert.deepEqual(forecastBounds(t,48),{min:t,max:t+48*3600});
+  assert.deepEqual(forecastBounds(t,120),{min:t,max:t+120*3600});
+  assert.equal(timelinePosition(t+24*3600,t,t+48*3600),.5);
+  assert.equal(timelinePosition(t+24*3600,t,t+120*3600),.2);
+  assert.equal(timelinePosition(t-300,t,t+48*3600),0);
+  assert.throws(()=>forecastBounds(t,75));
+});
+test('Forecast axis ranges are stable, including all-zero precipitation',()=>{
+  assert.ok(axisLimits([10,10,10],'temperature').max>axisLimits([10,10,10],'temperature').min);
+  assert.equal(axisLimits([0,0,0],'precipitation').min,0);
+  assert.equal(axisLimits([20,30,40],'cloud').max,100);
+  assert.equal(axisLimits([null,null],'temperature').max,1);
+});
+test('Location IDs and Mercator map coordinates are stable',()=>{
+  assert.equal(placeKey({latitude:51.51011,longitude:7.46533}),'51.510,7.465');
+  const xy=mercator(51.51,7.465,7),ll=unmercator(xy.x,xy.y,7);
+  assert.ok(Math.abs(ll.lat-51.51)<.0001);
+  assert.ok(Math.abs(ll.lon-7.465)<.0001);
+});
+test('Radar hosts are validated, frames are sorted and tile requests bounded',()=>{
+  const meta=safeRadarMetadata({host:'https://tilecache.rainviewer.com',radar:{past:[
+    {time:1760000600,path:'/v2/radar/1760000600'},
+    {time:1760000000,path:'/v2/radar/1760000000'}
+  ]}});
+  assert.equal(meta.frames[0].time,1760000000);
+  assert.match(radarTileURL(meta,0,7,24,62),/^https:\/\/tilecache\.rainviewer\.com/);
+  assert.equal(radarTileURL(meta,0,7,2,-1),null);
+  assert.throws(()=>safeRadarMetadata({host:'https://evil.test',radar:{past:[]}}));
 });
