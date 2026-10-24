@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101c2e" />
+  <meta name="description" content="OpenWetter is an open-source forecast explorer with DWD ICON point forecasts and rain radar." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>OpenWetter — Weather Explorer</title>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand" aria-label="OpenWetter Weather">
+        <div class="brand-icon" aria-hidden="true">◉</div>
+        <div class="brand-text"><b>openwetter</b><small>OPEN WEATHER EXPLORER</small></div>
+      </div>
+      <form class="search" id="searchForm" role="search">
+        <label class="sr-only" for="citySearch">Search for a location</label>
+        <span aria-hidden="true">⌕</span><input id="citySearch" type="search" placeholder="Search a city…" value="Dortmund" autocomplete="off" />
+        <button type="submit" class="search-go" aria-label="Search">↵</button>
+      </form>
+      <div class="top-actions">
+        <label class="sr-only" for="modelSelect">Weather model</label>
+        <select id="modelSelect" aria-label="Weather model"><option value="icon_d2">ICON-D2 · 2 km</option><option value="icon_eu">ICON-EU · 7 km</option><option value="icon_global">ICON Global · 11 km</option></select>
+        <button id="locateBtn" class="iconbutton" aria-label="Use my location" title="Use current location">◎</button>
+      </div>
+    </header>
+
+    <section class="panel" aria-label="Weather forecast details">
+      <div class="panel-heading">
+        <div class="place-heading"><div class="overline"><span class="live-dot"></span> WEATHER FOR <span id="pointCoordinates">51.51°N, 7.47°E</span></div>
+          <h1 id="locationName">Dortmund, Germany</h1><p id="modelDescription">DWD ICON-D2 • approximately 2 km resolution</p></div>
+        <div class="reading"><span id="heroTemp">—</span><span class="reading-unit" id="heroUnit">°C</span><span class="reading-meta" id="heroTime">Loading…</span></div>
+      </div>
+      <div id="quickValues" class="quick-values" aria-label="Weather at selected forecast time">
+        <span><strong>Temperature</strong><b id="quickTemp">—</b></span>
+        <span><strong>Rain</strong><b id="quickRain">—</b></span>
+        <span><strong>Wind</strong><b id="quickWind">—</b></span>
+        <span><strong>Clouds</strong><b id="quickCloud">—</b></span>
+      </div>
+      <div id="message" class="message" role="status" aria-live="polite"></div>
+      <div class="metric-tabs" id="metricButtons" role="group" aria-label="Weather variable">
+        <button data-metric="temperature" class="metric active" aria-pressed="true"><span>◉</span> Temperature</button>
+        <button data-metric="precipitation" class="metric" aria-pressed="false"><span>☂</span> Precipitation</button>
+        <button data-metric="wind" class="metric" aria-pressed="false"><span>≋</span> Wind</button>
+        <button data-metric="cloud" class="metric" aria-pressed="false"><span>☁</span> Clouds</button>
+      </div>
+      <div class="chart-wrap"><canvas id="forecastChart" aria-label="Interactive chart with forecast weather values, drag to select time" role="img"></canvas><div id="graphTooltip" class="graph-tooltip"></div></div>
+      <div class="timeline">
+        <button id="playBtn" class="play-btn" aria-label="Play forecast timeline" title="Play timeline">▶</button>
+        <div class="timeline-inner"><div class="time-info"><b id="timeLabel">—</b><span id="timeRange">Forecast · hourly</span></div>
+          <input id="timeSlider" type="range" min="0" max="1" value="0" step="1" aria-label="Select time" />
+          <div class="timeline-ends"><span id="startLabel">Now</span><span id="endLabel">+48 h</span></div>
+        </div>
+        <button id="settingsBtn" class="settings-btn" aria-expanded="false" aria-controls="settingsPanel" title="Layer settings">☷</button>
+      </div>
+      <div class="settings" id="settingsPanel" hidden><label for="opacitySlider">Radar layer opacity <output id="opacityOutput">75%</output></label><input id="opacitySlider" type="range" min="10" max="100" value="75" step="5" /><p>Forecast is a point forecast at the map marker; the prototype does not yet render gridded ICON forecast fields. Radar is observed precipitation history, not a forecast.</p></div>
+      <footer class="credits"><span>Forecast: <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a> / <a href="https://www.dwd.de/" target="_blank" rel="noreferrer">DWD</a> · Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noreferrer">RainViewer</a></span><a href="https://github.com/e-kotov/OpenWetter" target="_blank" rel="noreferrer">Source code ↗</a></footer>
+    </section>
+    <section id="map" class="map" aria-label="Weather map. Drag to pan with mouse. On touch, swipe one finger to change time, two fingers to move the map.">
+      <div class="map-surface" id="mapSurface"><div id="baseTiles" class="tiles"></div><div id="radarTiles" class="tiles radar-tiles"></div><div id="mapPin" class="map-pin"><span class="pin-circle">⌖</span><span id="pinTemp">—</span></div></div>
+      <div class="map-overlay map-label">
+        <span class="live-dot"></span><span id="mapLayerName">Base map · point forecast</span>
+        <small id="mapModelName">DWD ICON-D2</small>
+      </div>
+      <div class="map-overlay map-mode-control" role="group" aria-label="Map mode">
+        <button class="mode-btn active" id="modeForecast" aria-pressed="true">Forecast</button>
+        <button class="mode-btn" id="modeRadar" aria-pressed="false">Radar</button>
+      </div>
+      <div class="map-zoom" aria-label="Map controls">
+        <button id="zoomIn" aria-label="Zoom in">+</button>
+        <button id="zoomOut" aria-label="Zoom out">−</button>
+        <button id="resetView" aria-label="Reset map centre">⊙</button>
+      </div>
+      <div class="map-instruction" id="mapInstruction">Swipe map ↔ for time · two fingers to pan</div>
+      <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors<span id="radarAttribution"></span></div>
+    </section>
+
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
