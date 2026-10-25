@@ -806,7 +806,7 @@ function updateReadouts(){
   state.forecastIndex=f?nearestIndex(f.hourly.time,state.selectedTime):0;
   const temp=metricValue(state.model,'temperature');
   dom.heroTemp.textContent=temp==null?'—°':`${fmt(temp,'temperature')}°`;
-  dom.heroTime.textContent=formatTime(chartTime())+(chartTime()<state.anchor?' · ICON estimate':'');
+  dom.heroTime.textContent=formatTime(chartTime())+(chartTime()<Date.now()/1000?' · ICON estimate':'');
   dom.quickRain.textContent=`${fmt(metricValue(state.model,'precipitation'),'precipitation')} mm`;
   dom.quickWind.textContent=`${fmt(metricValue(state.model,'wind'),'wind')} km/h`;
   dom.quickCloud.textContent=`${fmt(metricValue(state.model,'cloud'),'cloud')}%`;
@@ -892,9 +892,9 @@ function drawGraphs(){
     const model=body.dataset.model,metric=body.dataset.metric;
     const f=state.forecasts[model],history=state.pastForecasts[model],{min,max}=chartBounds();
     const x=t=>timelinePosition(t,min,max)*w;
-    const hasPast=min<state.anchor;
+    const now=Date.now()/1000,hasPast=min<now;
     if(hasPast){
-      ctx.fillStyle='#33536b45';ctx.fillRect(0,0,x(state.anchor),plotH);
+      ctx.fillStyle='#33536b45';ctx.fillRect(0,0,x(now),plotH);
     }
     for(let i=0;i<=state.horizon;i+=24){
       const x0=x(min+i*3600),x1=x(Math.min(max,min+(i+24)*3600));
@@ -913,7 +913,7 @@ function drawGraphs(){
     }
     if(hasPast){
       ctx.strokeStyle='#a7d8f0';ctx.lineWidth=1.25;ctx.setLineDash([3,2]);ctx.beginPath();
-      ctx.moveTo(x(state.anchor),0);ctx.lineTo(x(state.anchor),plotH);ctx.stroke();ctx.setLineDash([]);
+      ctx.moveTo(x(now),0);ctx.lineTo(x(now),plotH);ctx.stroke();ctx.setLineDash([]);
       ctx.fillStyle='#c8d8e7';ctx.font='9px system-ui';ctx.textAlign='left';
       ctx.fillText('PAST · ICON estimate',5,10);
       ctx.textAlign='right';ctx.fillText('FORECAST',w-5,10);
@@ -921,7 +921,7 @@ function drawGraphs(){
     }
     if(!f&&!history)continue;
     const plot=(variable,{opacity=1,lineWidth=1.7,fill=false}={})=>{
-      const series=chartSeries(f,hasPast?history:null,VARIABLES[variable].key,min,max,state.anchor);
+      const series=chartSeries(f,hasPast?history:null,VARIABLES[variable].key,min,max,now);
       const valid=[...series.past,...series.future].map(d=>d.v).filter(Number.isFinite);
       const {min:ymin,max:ymax}=axisLimits(valid,variable);
       const scale=v=>plotH-3-((v-ymin)/(ymax-ymin))*(plotH-9);
