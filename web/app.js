@@ -341,7 +341,7 @@ function updateOverlayUI(){
     (shown==null?'Loading observed radar…':
       `Showing ${formatTime(shown)}${selected!==shown?' · loading '+formatTime(selected):''}`):
     (realGrid?`DWD ${state.iconGrid.run} · 48 h per 1° tile`:
-      euGrid?`DWD ICON-EU run ${formatTime(state.euWms.run)} · ~7 km`:
+      euGrid?`DWD ICON-EU run ${formatTime(state.euWms.run)} · ~7 km${observations.length?' · Observations do not follow ICON time':''}`:
       state.model==='icon_eu'?(state.euWmsError?'DWD EU map unavailable':'Loading DWD EU map…'):
       (observations.length?'Observations do not follow ICON time':state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`));
 }
