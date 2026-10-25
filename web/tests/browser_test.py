@@ -367,6 +367,12 @@ def ui(kind,viewport,browser):
        return rgba[3]>0;
     })()''')
     assert 'OBSERVED' in page.locator('#timeRange').inner_text()
+    # A previous visible radar bitmap must actually have been committed before
+    # the delayed next scan arrives; otherwise an initial load isn't a fade.
+    page.wait_for_function('''()=>{
+      const el=document.querySelector('#radarCanvas');
+      return el.dataset.weatherFrame==='observed:'+openwetterTest.state.radar.frames.at(-1).time;
+    }''')
     assert page.locator('#smoothFrames').is_checked()
     assert page.locator('#radarTransitionCanvas').is_hidden()
     # Delay an uncached radar frame. The old image must stay in place during scrubbing.
