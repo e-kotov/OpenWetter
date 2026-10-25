@@ -13,6 +13,7 @@ import {visibleIconSpatialTiles,downloadIconSpatialTile,paintIconSpatialTile,
 import {fetchIconEuCapabilities,paintIconEuWms,iconEuValidTime} from './wms-eu.mjs';
 import {createWeatherCrossfade} from './frame-transition.mjs';
 import {continuousWeatherTimeline,continuousCursorIndex} from './continuous-timeline.mjs';
+import {splitModelHistory,chartSeries} from './historical-charts.mjs';
 
 const el=id=>document.getElementById(id);
 const fields=[
@@ -36,7 +37,7 @@ const state={
   model:'icon_d2',view:'forecast',mode:'forecast',continuousCursor:null,horizon:48,
   horizontalHours:4,verticalHours:24,radarOpacity:.75,cloudOpacity:.5,showRain:false,showClouds:false,
   anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
-  forecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
+  forecasts:{},pastForecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
   radar:null,radarIndex:0,radarHours:6,displayedRadarTime:null,playing:false,
   smoothFrames:true,
   iconGrid:null,iconGridError:null,gridSeries:null,euWms:null,euWmsError:null,
@@ -107,12 +108,22 @@ function formatTime(seconds,options={weekday:'short',hour:'2-digit',minute:'2-di
 }
 function shortPlace(name){return name.split(',')[0]||name;}
 function fmt(v,metric){if(v==null)return '—';return metric==='precipitation'?v.toFixed(1):String(Math.round(v));}
-function metricValue(model,metric){return valueAtTime(state.forecasts[model],metric,state.selectedTime);}
+function chartTime(){return state.mode==='radar'?getRadarTime()??state.anchor:
+  state.mode==='continuous'?combinedFrame()?.time??state.selectedTime:state.selectedTime;}
+function metricValue(model,metric){const time=chartTime();return valueAtTime(
+  time<state.anchor?state.pastForecasts[model]:state.forecasts[model],metric,time);}
+function chartBounds(){
+  const b=timeBounds();if(state.mode==='forecast'||state.view==='compare')return b;
+  const start=state.radar?.frames?.[radarWindowStart()]?.time;
+  return {min:Math.min(state.anchor,start??state.anchor-state.radarHours*3600),max:b.max};
+}
 function combinedFrames(){const b=forecastBounds(state.anchor,state.horizon);return continuousWeatherTimeline(state.radar?.frames,{historyHours:state.radarHours,now:Date.now()/1000,start:state.iconGrid?.start??b.min,end:state.model==='icon_d2'?Math.min(b.max,state.iconGrid?.end??b.max):b.max,step:state.model==='icon_d2'?900:3600});}
 function combinedFrame(){const f=combinedFrames();return f[continuousCursorIndex(f,state.continuousCursor)]||null;}
 function setContinuousIndex(index){const frames=combinedFrames(),f=frames[clamp(Math.round(index),0,frames.length-1)];if(!f)return;
   const previous=combinedFrame();if(state.mode==='continuous'&&previous&&previous.kind!==f.kind)beginBoundaryTransition(previous.kind,f.kind);
-  state.continuousCursor=f;if(f.kind==='radar')state.radarIndex=nearestIndex(state.radar.frames.map(x=>x.time),f.time);else{state.selectedTime=f.time;updateReadouts();requestCursor();}updateTimeUI();updateOverlayUI();requestMap();}
+  state.continuousCursor=f;if(f.kind==='radar')state.radarIndex=nearestIndex(state.radar.frames.map(x=>x.time),f.time);
+  else state.selectedTime=f.time;
+  updateReadouts();updateTimeUI();requestCursor();requestGraphs();updateOverlayUI();requestMap();}
 let boundaryTarget=null,boundaryVersion=0;
 function beginBoundaryTransition(from,to){
   const origin=from==='radar'?dom.radarCanvas:dom.iconCanvas,layer=dom.boundaryTransitionCanvas;
@@ -200,7 +211,9 @@ async function loadModel(model,epoch=fetchEpoch){
   try{
     const result=parseForecast(await getPointForecastJson(forecastURL({...state.place,model}),controller.signal));
     if(controller.signal.aborted||epoch!==fetchEpoch)return;
-    state.forecasts[model]={...result,fetchedAt:Date.now()};
+    const {forecast,past}=splitModelHistory(result,state.anchor);
+    state.forecasts[model]={...forecast,fetchedAt:Date.now()};
+    state.pastForecasts[model]=past;
     if(model==='icon_d2')applyNativeGridForecast();
     try{localStorage.setItem(cacheId(model),JSON.stringify({savedAt:Date.now(),forecast:result}));}catch{/* optional */}
     if(model===state.model){state.forecast=state.forecasts[model];showMessage('');}
@@ -209,7 +222,10 @@ async function loadModel(model,epoch=fetchEpoch){
     const cached=cachedModel(model);
     // Keep already-available DWD grid graphs, even if the optional wind
     // provider is offline or times out. A point error must not blank them.
-    if(cached)state.forecasts[model]={...cached,fetchedAt:Date.now()};
+    if(cached){
+      const {forecast,past}=splitModelHistory(cached,state.anchor);
+      state.forecasts[model]={...forecast,fetchedAt:Date.now()};state.pastForecasts[model]=past;
+    }
     if(model==='icon_d2'&&state.gridSeries)applyNativeGridForecast();
     const usable=state.forecasts[model];
     if(usable){
@@ -246,7 +262,7 @@ async function loadRadar(){
     if(controller.signal.aborted)return;
     const hadRadar=Boolean(state.radar);state.radar={...metadata,fetchedAt:Date.now()};state.radarIndex=metadata.frames.length-1;
     if(state.mode==='continuous'&&!hadRadar&&metadata.frames.length)state.continuousCursor={kind:'radar',time:metadata.frames.at(-1).time};
-    showMessage('');updateTimeUI();requestMap();
+    showMessage('');updateReadouts();updateTimeUI();requestCursor();requestGraphs();requestMap();
   }catch(error){if(!controller.signal.aborted)showMessage('Official DWD rain radar unavailable: '+error.message,true);}
 }
 
@@ -329,7 +345,7 @@ function setPlace(place,{center=true}={}){
   if(!validPlace(place))return;
   stopPlay();fetchEpoch++;
   for(const ctrl of fetchControllers.values())ctrl.abort();fetchControllers.clear();
-  state.loadingModels.clear();state.modelErrors={};state.forecasts={};state.forecast=null;
+  state.loadingModels.clear();state.modelErrors={};state.forecasts={};state.pastForecasts={};state.forecast=null;
   state.gridSeries=null;pointSeriesEpoch++;
   state.anchor=hourFloor(Date.now()/1000);state.selectedTime=state.anchor;
   state.place={name:place.name,latitude:clampLatitude(place.latitude),longitude:wrappedLongitude(place.longitude)};
@@ -366,13 +382,13 @@ async function loadEuWms(){
 function setView(view){
   if(!['forecast','compare'].includes(view))return;
   state.view=view;stopPlay();
-  if(view==='compare'&&state.mode==='radar')state.mode='forecast';
+  if(view==='compare'&&state.mode!=='forecast')state.mode='forecast';
   dom.appRoot.classList.toggle('compare-mode',view==='compare');
   dom.viewForecast.classList.toggle('active',view==='forecast');dom.viewCompare.classList.toggle('active',view==='compare');
   dom.viewForecast.setAttribute('aria-pressed',String(view==='forecast'));
   dom.viewCompare.setAttribute('aria-pressed',String(view==='compare'));
   dom.plotsHeading.textContent=view==='compare'?'ICON model comparison · shared time':
-    state.mode==='radar'?'Forecast graphs · independent of past radar':'Forecast graphs · future model data';
+    state.mode==='radar'||state.mode==='continuous'? 'Past ICON estimates + future forecasts · radar observations on map':'Forecast graphs · future model data';
   closeDrawer();refreshView();loadModelsForView();
 }
 function setHorizon(hours){
@@ -398,14 +414,14 @@ function setRadarIndex(index){
   if(!state.radar?.frames?.length)return;
   const next=clamp(Math.round(index),radarWindowStart(),state.radar.frames.length-1);
   if(next===state.radarIndex)return;
-  state.radarIndex=next;updateTimeUI();updateOverlayUI();requestMap();
+  state.radarIndex=next;updateReadouts();updateTimeUI();requestCursor();requestGraphs();updateOverlayUI();requestMap();
 }
 function setRadarHours(hours){
   if(![2,6].includes(hours))return;
   stopPlay();
   state.radarHours=hours;
   if(state.radar?.frames?.length)state.radarIndex=Math.max(state.radarIndex,radarWindowStart());
-  updateTimeUI();updateOverlayUI();requestMap();save();
+  updateTimeUI();updateReadouts();requestCursor();requestGraphs();updateOverlayUI();requestMap();save();
 }
 function setMode(mode){
   if(!['forecast','radar','continuous'].includes(mode))return;
@@ -423,8 +439,9 @@ function setMode(mode){
     'ACTUAL rainfall measurements, not predictions. Swipe for older scans · 2 fingers pan':
     'MODEL prediction, not radar. Swipe for later hours · 2 fingers pan';
   dom.plotsHeading.textContent=mode==='radar'?'Forecast graphs · independent of past radar':
-    state.view==='compare'?'ICON model comparison · shared time':'Forecast graphs · future model data';
-  updateTimeUI();requestMap();
+    state.view==='compare'?'ICON model comparison · shared time':
+    mode==='continuous'?'Past ICON estimates + future forecasts · radar observations on map':'Forecast graphs · future model data';
+  updateReadouts();updateTimeUI();requestCursor();requestGraphs();requestMap();
   if(mode==='radar'||mode==='continuous'||state.showRain)void loadRadar();
 }
 function updateOverlayUI(){
@@ -790,7 +807,7 @@ function updateReadouts(){
   state.forecastIndex=f?nearestIndex(f.hourly.time,state.selectedTime):0;
   const temp=metricValue(state.model,'temperature');
   dom.heroTemp.textContent=temp==null?'—°':`${fmt(temp,'temperature')}°`;
-  dom.heroTime.textContent=formatTime(state.selectedTime);
+  dom.heroTime.textContent=formatTime(chartTime())+(chartTime()<state.anchor?' · ICON estimate':'');
   dom.quickRain.textContent=`${fmt(metricValue(state.model,'precipitation'),'precipitation')} mm`;
   dom.quickWind.textContent=`${fmt(metricValue(state.model,'wind'),'wind')} km/h`;
   dom.quickCloud.textContent=`${fmt(metricValue(state.model,'cloud'),'cloud')}%`;
@@ -850,7 +867,7 @@ function renderGraphs(){
       const row=document.createElement('article');row.className='plot-row';row.dataset.model=state.model;row.dataset.metric=metric;
       const label=document.createElement('div');label.className='plot-label';
       const name=document.createElement('strong');name.textContent=VARIABLES[metric].name;
-      const details=document.createElement('small');details.textContent=VARIABLES[metric].unit;
+      const details=document.createElement('small');details.textContent=VARIABLES[metric].unit+(state.mode!=='forecast'?' · past: ICON model':'');
       label.append(name,details);
       const val=document.createElement('span');val.className='plot-value';
       const plot=createPlotBody(state.model,metric);
