@@ -113,6 +113,23 @@ def ui(kind,viewport,browser):
     assert state('model')=='icon_d2'
     assert '°' in page.locator('#heroTemp').inner_text()
     assert page.evaluate('window.__mockCounts().forecast.icon_d2')==1
+    # Android 15+ uses a native inset-aware container. Simulate its reduced
+    # viewport and ensure app controls stay in a non-overlapping header row.
+    if kind=='mobile':
+      geometry=page.evaluate('''()=>{
+        const row=document.querySelector('.header-line');
+        const children=[...row.children].map(x=>x.getBoundingClientRect());
+        return {width:innerWidth,rects:children.map(x=>({left:x.left,right:x.right,top:x.top,bottom:x.bottom}))};
+      }''')
+      bounds=geometry['rects']
+      assert all(0<=v['left'] and v['right']<=geometry['width']+1 for v in bounds),geometry
+      assert all(bounds[i]['right']<=bounds[i+1]['left']+2 for i in range(len(bounds)-1)),geometry
+      # Check the most constrained phones as well; the status bar is inset natively.
+      for width in [320,360,390]:
+        page.set_viewport_size({'width':width,'height':844})
+        measurements=page.evaluate('''()=>[...document.querySelector('.header-line').children].map(x=>({left:x.getBoundingClientRect().left,right:x.getBoundingClientRect().right}))''')
+        assert all(0<=v['left'] and v['right']<=width+1 for v in measurements),(width,measurements)
+        assert all(measurements[i]['right']<=measurements[i+1]['left']+2 for i in range(len(measurements)-1)),(width,measurements)
     assert not errors, errors
 
     # Time indicator moves, the four plotted graphs do not scroll.
@@ -212,6 +229,30 @@ def ui(kind,viewport,browser):
     assert page.locator('#map').is_visible()
     assert page.locator('#modelDescription').inner_text().startswith('ICON-EU')
 
+    # Independent map switches show real observed layers; unlike point graphs,
+    # their timestamps must NOT pretend to track the ICON forecast slider.
+    previous_time=state('selectedTime')
+    page.locator('#toggleClouds').click()
+    assert page.locator('#toggleClouds').get_attribute('aria-pressed')=='true'
+    page.wait_for_function('document.querySelectorAll("#cloudTiles img").length>0')
+    url=page.locator('#cloudTiles img').first.get_attribute('data-source-url')
+    assert 'maps.dwd.de/geoserver/dwd/wms?' in url,url
+    assert 'Satellite_meteosat_1km_euat_rgb_clouds_day_and_night' in url,url
+    assert 'Satellite © DWD' in page.locator('#radarAttribution').inner_text()
+    assert state('selectedTime')==previous_time
+    page.locator('#toggleClouds').click()
+    assert page.locator('#toggleClouds').get_attribute('aria-pressed')=='false'
+    page.wait_for_function('document.querySelectorAll("#cloudTiles img").length===0')
+    page.locator('#toggleRain').click()
+    assert page.locator('#toggleRain').get_attribute('aria-pressed')=='true'
+    page.wait_for_function('document.querySelectorAll("#radarTiles img").length>0')
+    assert 'RainViewer' in page.locator('#radarAttribution').inner_text()
+    assert 'Observations do not follow ICON time' in page.locator('#mapModelName').inner_text()
+    assert state('selectedTime')==previous_time
+    page.locator('#toggleRain').click()
+    assert page.locator('#toggleRain').get_attribute('aria-pressed')=='false'
+    page.wait_for_function('document.querySelectorAll("#radarTiles img").length===0')
+
     # Historical radar is a separate, explicitly marked time axis.
     page.locator('#modeRadar').click()
     page.wait_for_function('openwetterTest.state.radar?.frames?.length===12')
@@ -220,7 +261,9 @@ def ui(kind,viewport,browser):
     input_range(page,'#timeSlider',5)
     assert state('radarIndex')==5
     assert 'RainViewer' in page.locator('#radarAttribution').inner_text()
-    page.locator('#modeForecast').click()
+    page.locator('#toggleRain').click()  # Radar history can also be switched off from the map.
+    assert state('mode')=='forecast'
+    page.wait_for_function('document.querySelectorAll("#radarTiles img").length===0')
     page.locator('#modelSelect').select_option('icon_d2')
     page.locator('#horizon48').click()
     input_range(page,'#timeSlider',12)

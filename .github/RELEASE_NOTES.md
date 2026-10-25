@@ -1,17 +1,20 @@
-# OpenWetter v0.1.0-alpha.1 — Android preview
+# OpenWetter v0.1.0-alpha.2 — Android layout fix and observed map overlays
 
-This is an **early experimental preview** of OpenWetter. Download the attached **OpenWetter-v0.1.0-alpha.1-debug.apk** to install it on Android 8.0+ (API 26+). This APK is **debug-signed**, not a production-signed release.
+This is an experimental **debug-signed** Android APK for Android 8.0 or newer (API 26+). It is not a production release.
 
-Features included:
-- DWD ICON-D2, ICON-EU and ICON global point forecasts using Open-Meteo
-- Model comparisons, weather charts, selected-location search and saved settings
-- Historical precipitation radar layers and configurable time scrubbing
-- Bundled web interface in an Android WebView shell
+## Fixes and changes
+- Fixed header buttons obscured by Android status-bar icons on Android 15+ / targetSdk 35 using dynamic status, navigation, cutout and keyboard insets.
+- Improved narrow-screen header so forecast/compare and settings buttons do not crowd the app title.
+- New independent **☔ Rain radar** switch overlays the most recently available RainViewer radar observation.
+- New **☁ Satellite clouds** switch overlays DWD Meteosat cloud imagery (WMS); adjustable opacity.
+- Radar history remains a separate selectable playback timeline.
+- Added unit and mocked mobile-browser checks for overlays, DWD WMS URL construction, and narrow-screen layouts.
 
-Limitations:
-- No animated, gridded forecast maps yet; the map does not display forecast model raster fields.
-- Internet is required for live forecasts, map tiles, geocoding and radar data.
-- Browser interface tests use mocked network data. The APK builds on GitHub Actions but **has not been tested on a physical Android device**.
-- This build uses a temporary Android debug-signing key; future builds may require removing this preview before installing a newer one.
+**The new map overlays are observations, not ICON forecast rain/cloud fields.** They do not follow the chosen future forecast hour. A true animated ICON gridded weather map is still unimplemented.
 
-GitHub Actions runs JavaScript/browser tests and builds the APK before publication. The attached `SHA256SUMS.txt` provides the APK hash for integrity checks.
+## Installation and limits
+- Download `OpenWetter-v0.1.0-alpha.2-debug.apk` below.
+- This APK uses a GitHub-runner temporary debug-signing key. **Uninstall the previous preview before installing** if Android rejects the update due to a different signature. Uninstalling clears local app settings.
+- Live map imagery needs network access and depends on external data services. Some layers may be temporarily unavailable; the DWD cloud layer has not been tested against the live service on-device.
+- The WebView layout has been updated and Android compilation/automated browser tests run in CI; physical-device verification is still needed.
+- `SHA256SUMS.txt` contains the expected file checksum.

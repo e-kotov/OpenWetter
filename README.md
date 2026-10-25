@@ -6,18 +6,20 @@ A small, independently implemented open-source weather explorer for private, non
 
 ## Interface scope
 
-The interface places compact weather forecasts and a graph above the map, using independently implemented gestures and styling. It currently provides one switchable chart instead of a full stack of independently editable graphs, and it does not yet render gridded forecast maps.
+The interface places synchronized weather graphs above the map, with independently implemented gestures and styling. It does not yet render gridded forecast-model maps, but can overlay latest observed radar and satellite cloud imagery.
 
 ## Working features
 
 - DWD **ICON-D2**, **ICON-EU**, and **ICON Global** point forecasts via the **Open-Meteo DWD API**.
 - Graphs: temperature, hourly precipitation, wind speed, cloud cover; tap or drag to select hour; detailed selected values.
 - Map with OpenStreetMap tiles; tap to select forecast point, mouse drag to pan, wheel/buttons to zoom; touch: 1 finger scrubs weather time, 2 fingers pan and pinch zoom.
-- RainViewer **observed radar frames**, an independent historical timeline; translucent overlay and opacity setting.
+- RainViewer **observed rain radar** as a toggleable overlay independent of ICON forecast time, plus a separate historical radar timeline with opacity setting.
+- **Observed satellite clouds** via DWD Meteosat public WMS, toggleable above the map with adjustable transparency. These are satellite observations, not future ICON cloud forecasts.
+- Fixed Android 15+ edge-to-edge status bar and navigation-bar overlap by applying Android WindowInsets and display-cutout-safe padding around the WebView.
 - City search using Open-Meteo geocoding, geolocation (with permission), saved preferences and last successful forecast, play/pause timeline.
 - Offline-cached static shell (PWA), not offline weather; no API keys or accounts required for personal use.
 
-**Important limitations:** The forecast-mode map is a basemap and forecast location marker, **not a gridded forecast animation**; no raw DWD ICON GRIB2 processing or direct DWD radar ingestion yet. RainViewer offers past observations only, at a maximum raster tile zoom of 7 and may rate-limit or have incomplete coverage. Forecast graph and historical radar use **separate time axes**. The web UI and chart code is implemented, but production-grade network behaviour and Android integration need device verification.
+**Important limitations:** The map remains a basemap plus forecast location marker with optional **observed** rain/cloud overlays, **not a gridded forecast animation**. The observed overlays are independent of the selected ICON future time. No raw DWD ICON GRIB2 processing or direct DWD radar ingestion yet. RainViewer offers past observations only, at a maximum raster tile zoom of 7 and may rate-limit or have incomplete coverage. Forecast graph and historical radar use **separate time axes**. The web UI and chart code is implemented, but production-grade network behaviour and Android integration need device verification.
 
 ## Run the prototype
 
@@ -34,7 +36,7 @@ On Android Chrome, once hosted on HTTPS, open the URL and choose **Install app**
 
 ## Android project / APK build
 
-Android project is under `android/`. It uses a minimal Java WebView rather than Compose and serves bundled assets from a secure local origin using `shouldInterceptRequest`. The app makes HTTPS requests directly to Open-Meteo, OpenStreetMap and RainViewer.
+Android project is under `android/`. It uses a minimal Java WebView rather than Compose and serves bundled assets from a secure local origin using `shouldInterceptRequest`. The app makes HTTPS requests directly to Open-Meteo, OpenStreetMap, RainViewer and DWD WMS.
 
 Prerequisites: JDK 17, **Android SDK 35**, and **Gradle 8.9** (no wrapper jar included). With them installed:
 
@@ -43,7 +45,7 @@ gradle -p android :app:assembleDebug
 # Result: android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-For a new GitHub repository, `.github/workflows/android.yml` runs JavaScript and Chromium tests and builds the debug APK in GitHub Actions on every push to `main` and on pull requests and uploads the APK as an Actions artifact. It is **not a signed release build**. The Android debug APK has been compiled successfully by GitHub Actions; installation and live-data behaviour on an Android device remain unverified.
+For a new GitHub repository, `.github/workflows/android.yml` runs JavaScript and Chromium tests and builds the debug APK in GitHub Actions on every push to `main` and on pull requests and uploads the APK as an Actions artifact. It is **not a signed release build**. The Android debug APK has been compiled successfully by GitHub Actions; the new system-bar layout and live imagery still require verification on an Android device.
 
 ## Tests
 
@@ -58,7 +60,7 @@ The browser integration test loads the actual HTML/CSS/JS into an isolated Chrom
 
 ## Provider and licensing notes
 
-- DWD open data is generally free with attribution under CC BY 4.0; check terms for each product: https://www.dwd.de/copyright
+- DWD satellite WMS and open data are generally free with attribution under CC BY 4.0; check terms for each product: https://www.dwd.de/copyright
 - Open-Meteo no-key access for non-commercial use is subject to request limits: https://open-meteo.com/en/terms
 - RainViewer public API is for personal, educational and small-community use, with attribution and rate limits: https://www.rainviewer.com/api/weather-maps-api.html
 - OSM tiles subject to tile usage policy; no bulk scraping or offline prefetch: https://operations.osmfoundation.org/policies/tiles/
@@ -75,7 +77,7 @@ For an animated gridded forecast map, add a backend that obtains selected **ICON
 
 ## Android prerelease
 
-The [GitHub Releases page](https://github.com/e-kotov/OpenWetter/releases) provides downloadable preview APKs. The `v0.1.0-alpha.1` prerelease is **debug-signed for testing**, not a production/release-signed build; future builds may use a different debug certificate and require uninstalling the previous preview before installation.
+The [GitHub Releases page](https://github.com/e-kotov/OpenWetter/releases) provides downloadable preview APKs. The `v0.1.0-alpha.2` prerelease is **debug-signed for testing**, not a production/release-signed build; future builds may use a different debug certificate and require uninstalling the previous preview before installation.
 
 ## GitHub Actions
 

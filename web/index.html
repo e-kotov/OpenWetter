@@ -62,14 +62,20 @@
       <p>One finger: lock to the first dominant direction. Vertical starts faster by default. Two fingers: pan or zoom the map. Swipe sensitivity is saved on this device.</p>
       <label for="opacitySlider">Radar transparency <output id="opacityOutput">75%</output></label>
       <input id="opacitySlider" type="range" min="10" max="100" step="5" value="75" />
+      <label for="cloudOpacitySlider">Cloud transparency <output id="cloudOpacityOutput">50%</output></label>
+      <input id="cloudOpacitySlider" type="range" min="10" max="100" step="5" value="50" />
     </div>
     <div class="credit-line">Point forecast: <a href="https://open-meteo.com/en/docs/dwd-api" target="_blank" rel="noreferrer">Open-Meteo</a> / <a href="https://www.dwd.de/" target="_blank" rel="noreferrer">DWD</a> · <a href="https://github.com/e-kotov/OpenWetter" target="_blank" rel="noreferrer">Code</a></div>
   </section>
 
   <section id="map" class="map" aria-label="Weather map: swipe right or up to move forward in time; two fingers to pan or zoom">
-    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><div id="radarTiles" class="tiles radar-tiles"></div><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
+    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><div id="radarTiles" class="tiles radar-tiles"></div><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
     <div class="map-label"><span class="map-dot"></span><span id="mapLayerName">Forecast point</span><small id="mapModelName">DWD ICON-D2</small></div>
-    <div class="map-mode" role="group" aria-label="Map layer"><button id="modeForecast" class="mode-btn active" aria-pressed="true">Forecast point</button><button id="modeRadar" class="mode-btn" aria-pressed="false">Observed radar</button></div>
+    <div class="map-mode" role="group" aria-label="Timeline mode"><button id="modeForecast" class="mode-btn active" aria-pressed="true">Forecast point</button><button id="modeRadar" class="mode-btn" aria-pressed="false">Radar history</button></div>
+    <div class="map-overlays" role="group" aria-label="Live observed map overlays">
+      <button id="toggleRain" class="overlay-btn" aria-pressed="false" title="Show latest observed rain radar, independent of forecast time">☔ Rain radar</button>
+      <button id="toggleClouds" class="overlay-btn" aria-pressed="false" title="Show current Meteosat satellite clouds, independent of forecast time">☁ Satellite clouds</button>
+    </div>
     <div class="map-controls"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button><button id="resetView" aria-label="Recenter map">◎</button></div>
     <div id="mapInstruction" class="map-instruction">Swipe ↔ slowly / ↕ quickly · two fingers to move map</div>
     <div class="map-credit">© <a href="https://www.openstreetmap.org/copyright" rel="noreferrer" target="_blank">OpenStreetMap</a><span id="radarAttribution"></span></div>

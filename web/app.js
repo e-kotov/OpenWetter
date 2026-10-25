@@ -2,7 +2,7 @@ import {
   MODELS, MODEL_IDS, VARIABLES, DEFAULT_PLACES, clamp, wrappedLongitude, clampLatitude,
   forecastURL, parseForecast, nearestIndex, valueAtTime, axisLimits, hourFloor,
   pickGestureAxis, scrubTimestamp, forecastBounds, timelinePosition, placeKey,
-  safeRadarMetadata, radarTileURL, mercator, unmercator,
+  safeRadarMetadata, radarTileURL, mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
 } from './logic.mjs';
 
 const el=id=>document.getElementById(id);
@@ -11,7 +11,8 @@ const fields=[
   'modelSelect','locateBtn','locationName','modelDescription','heroTemp','heroTime','quickRain','quickWind',
   'quickCloud','message','plotsHeading','horizon48','horizon120','graphStack','playBtn','timeLabel',
   'timeRange','timeSlider','startLabel','endLabel','settingsPanel','horizontalSpeed','horizontalOutput',
-  'verticalSpeed','verticalOutput','opacitySlider','opacityOutput','map','baseTiles','radarTiles',
+  'verticalSpeed','verticalOutput','opacitySlider','opacityOutput','cloudOpacitySlider','cloudOpacityOutput',
+  'map','baseTiles','radarTiles','cloudTiles','toggleRain','toggleClouds',
   'mapPin','pinTemp','mapLayerName','mapModelName','modeForecast','modeRadar','zoomIn','zoomOut',
   'resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
   'placesList','savePlace',
@@ -22,7 +23,7 @@ const state={
   place:defaultPlace, map:{latitude:defaultPlace.latitude,longitude:defaultPlace.longitude,zoom:7},
   favorites:DEFAULT_PLACES.map(x=>({...x})),
   model:'icon_d2',view:'forecast',mode:'forecast',horizon:48,
-  horizontalHours:4,verticalHours:24,radarOpacity:.75,
+  horizontalHours:4,verticalHours:24,radarOpacity:.75,cloudOpacity:.5,showRain:false,showClouds:false,
   anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
   forecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
   radar:null,radarIndex:0,playing:false,
@@ -30,6 +31,7 @@ const state={
 let fetchEpoch=0;
 const fetchControllers=new Map();
 let radarController=null,playTimer=null,mapRedrawRequest=0,graphRedrawRequest=0,forecastCursorRequest=0;
+let cloudWarningIssued=false;
 const pointers=new Map();
 let drag=null;
 const FORECAST_MAX_AGE=45*60_000;
@@ -39,7 +41,8 @@ const STORAGE='openwetter.settings.v2';
 function save(){
   try{localStorage.setItem(STORAGE,JSON.stringify({place:state.place,favorites:state.favorites,
     model:state.model,horizon:state.horizon,horizontalHours:state.horizontalHours,
-    verticalHours:state.verticalHours,radarOpacity:state.radarOpacity}));}catch{/* Browsers may deny storage. */}
+    verticalHours:state.verticalHours,radarOpacity:state.radarOpacity,cloudOpacity:state.cloudOpacity,
+    showRain:state.showRain,showClouds:state.showClouds}));}catch{/* Browsers may deny storage. */}
 }
 function validPlace(p){return p&&typeof p.name==='string'&&p.name.length>0&&p.name.length<150&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=85&&Math.abs(p.longitude)<=180;}
 function loadPreferences(){
@@ -54,6 +57,9 @@ function loadPreferences(){
     if(Number.isFinite(p.horizontalHours))state.horizontalHours=clamp(p.horizontalHours,1,24);
     if(Number.isFinite(p.verticalHours))state.verticalHours=clamp(p.verticalHours,4,72);
     if(Number.isFinite(p.radarOpacity))state.radarOpacity=clamp(p.radarOpacity,.1,1);
+    if(Number.isFinite(p.cloudOpacity))state.cloudOpacity=clamp(p.cloudOpacity,.1,1);
+    if(typeof p.showRain==='boolean')state.showRain=p.showRain;
+    if(typeof p.showClouds==='boolean')state.showClouds=p.showClouds;
   }catch{/* Use defaults. */}
 }
 function showMessage(msg,error=false){dom.message.textContent=msg;dom.message.className=`message${msg?' visible':''}${error?' error':''}`;}
@@ -193,12 +199,37 @@ function setMode(mode){
   dom.modeForecast.classList.toggle('active',mode==='forecast');dom.modeRadar.classList.toggle('active',mode==='radar');
   dom.modeForecast.setAttribute('aria-pressed',String(mode==='forecast'));
   dom.modeRadar.setAttribute('aria-pressed',String(mode==='radar'));
-  dom.radarTiles.style.display=mode==='radar'?'block':'none';
-  dom.mapLayerName.textContent=mode==='radar'?'Observed rain':'Point forecast · no map field';
-  dom.radarAttribution.textContent=mode==='radar'?' · Radar © RainViewer':'';
+  updateOverlayUI();
   dom.mapInstruction.textContent=mode==='radar'?'Swipe ↔ / ↕ for past radar · 2 fingers to pan':'Swipe ↔ slowly / ↕ quickly · two fingers to move map';
   updateTimeUI();requestMap();
-  if(mode==='radar')void loadRadar();
+  if(mode==='radar'||state.showRain)void loadRadar();
+}
+function updateOverlayUI(){
+  const visibleRain=state.mode==='radar'||state.showRain;
+  dom.toggleRain.setAttribute('aria-pressed',String(visibleRain));
+  dom.toggleClouds.setAttribute('aria-pressed',String(state.showClouds));
+  dom.radarTiles.style.display=visibleRain?'block':'none';
+  dom.cloudTiles.hidden=!state.showClouds;
+  const observations=[];
+  if(visibleRain)observations.push('rain radar');
+  if(state.showClouds)observations.push('satellite clouds');
+  dom.mapLayerName.textContent=state.mode==='radar'?'Rain radar · observed':
+    (observations.length?`Observed: ${observations.join(' + ')}`:'Point forecast · no map field');
+  dom.radarAttribution.textContent=(visibleRain?' · Radar © RainViewer':'')+
+    (state.showClouds?' · Satellite © DWD':'');
+  dom.mapModelName.textContent=state.mode==='radar'?'Radar history · independent timeline':
+    (observations.length?'Observations do not follow ICON time':`DWD ${MODELS[state.model].label}`);
+}
+function toggleObservation(which){
+  if(which==='rain'){
+    if(state.mode==='radar'){
+      // The radar history timeline always shows rain; tapping the active chip hides it.
+      setMode('forecast');state.showRain=false;
+    }else state.showRain=!state.showRain;
+    if(state.showRain)void loadRadar();
+  }else if(which==='clouds'){state.showClouds=!state.showClouds;cloudWarningIssued=false;}
+  else return;
+  updateOverlayUI();save();requestMap();
 }
 function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}
 function play(){
@@ -244,7 +275,7 @@ function updateReadouts(){
   dom.quickWind.textContent=`${fmt(metricValue(state.model,'wind'),'wind')} km/h`;
   dom.quickCloud.textContent=`${fmt(metricValue(state.model,'cloud'),'cloud')}%`;
   dom.pinTemp.textContent=temp==null?'—':`${fmt(temp,'temperature')}°`;
-  dom.mapModelName.textContent=`DWD ${MODELS[state.model].label}`;
+  updateOverlayUI();
   for(const row of dom.graphStack.querySelectorAll('[data-model][data-metric]')){
     const output=row.querySelector('.plot-value');if(!output)continue;
     const metric=row.dataset.metric, model=row.dataset.model;
@@ -391,7 +422,12 @@ function tileLayer(element,items){
     keys.add(t.key);let img=existing.get(t.key);
     if(!img){
       img=document.createElement('img');img.dataset.key=t.key;img.src=t.url;img.alt='';img.draggable=false;img.decoding='async';
-      img.addEventListener('error',()=>{img.style.opacity=0;});element.append(img);
+      img.addEventListener('error',()=>{
+        img.style.opacity=0;
+        if(element===dom.cloudTiles && state.showClouds && !cloudWarningIssued){
+          cloudWarningIssued=true;showMessage('DWD satellite image unavailable; try again later.',true);
+        }
+      });element.append(img);
     }
     img.style.width=`${t.size}px`;img.style.height=`${t.size}px`;
     img.style.left=`${t.left}px`;img.style.top=`${t.top}px`;
@@ -411,7 +447,7 @@ function renderMap(){
     tiles.push({key:`${z}/${xx}/${y}`,url:`https://tile.openstreetmap.org/${z}/${xx}/${y}.png`,size:256,left:x*256-topLeft.x,top:y*256-topLeft.y});
   }
   tileLayer(dom.baseTiles,tiles);
-  if(state.mode==='radar'&&state.radar?.frames?.length){
+  if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
     const rz=Math.min(z,7),scale=2**(z-rz),tileSize=256*scale,limit=2**rz;
     const radarTiles=[];
     const x0=Math.floor(topLeft.x/tileSize),x1=Math.floor((topLeft.x+r.width)/tileSize),
@@ -422,6 +458,19 @@ function renderMap(){
     }
     tileLayer(dom.radarTiles,radarTiles);
   }else dom.radarTiles.replaceChildren();
+  // DWD Meteosat imagery is the most recent observed scene, not a future cloud forecast.
+  if(state.showClouds){
+    const satZoom=Math.min(z,9),scale=2**(z-satZoom),tileSize=256*scale,limit=2**satZoom;
+    const clouds=[];
+    const x0=Math.floor(topLeft.x/tileSize),x1=Math.floor((topLeft.x+r.width)/tileSize),
+      y0=Math.max(0,Math.floor(topLeft.y/tileSize)),y1=Math.min(limit-1,Math.floor((topLeft.y+r.height)/tileSize));
+    for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+      const xx=((x%limit)+limit)%limit;
+      clouds.push({key:`${satZoom}/${xx}/${y}`,url:dwdWmsTileURL(DWD_SATELLITE_CLOUDS,satZoom,x,y),
+        size:tileSize,left:x*tileSize-topLeft.x,top:y*tileSize-topLeft.y});
+    }
+    tileLayer(dom.cloudTiles,clouds);
+  }else dom.cloudTiles.replaceChildren();
   const pin=mercator(state.place.latitude,state.place.longitude,z),world=256*2**z;
   let dx=pin.x-point.x;if(dx>world/2)dx-=world;if(dx< -world/2)dx+=world;
   const x=r.width/2+dx,y=r.height/2+(pin.y-point.y);
@@ -508,6 +557,8 @@ function wire(){
   dom.playBtn.addEventListener('click',play);
   dom.modeForecast.addEventListener('click',()=>setMode('forecast'));
   dom.modeRadar.addEventListener('click',()=>setMode('radar'));
+  dom.toggleRain.addEventListener('click',()=>toggleObservation('rain'));
+  dom.toggleClouds.addEventListener('click',()=>toggleObservation('clouds'));
   dom.zoomIn.addEventListener('click',()=>zoom(1));dom.zoomOut.addEventListener('click',()=>zoom(-1));
   dom.resetView.addEventListener('click',()=>{state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;requestMap();});
   dom.settingsBtn.addEventListener('click',()=>{
@@ -519,6 +570,10 @@ function wire(){
   });
   dom.verticalSpeed.addEventListener('input',event=>{
     state.verticalHours=Number(event.target.value);dom.verticalOutput.textContent=`${state.verticalHours} h / 100 px`;save();
+  });
+  dom.cloudOpacitySlider.addEventListener('input',event=>{
+    state.cloudOpacity=Number(event.target.value)/100;dom.cloudTiles.style.opacity=String(state.cloudOpacity);
+    dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;save();
   });
   dom.opacitySlider.addEventListener('input',event=>{
     state.radarOpacity=Number(event.target.value)/100;
@@ -577,10 +632,15 @@ dom.verticalOutput.textContent=`${state.verticalHours} h / 100 px`;
 dom.opacitySlider.value=String(Math.round(state.radarOpacity*100));
 dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;
 dom.radarTiles.style.opacity=String(state.radarOpacity);
+dom.cloudOpacitySlider.value=String(Math.round(state.cloudOpacity*100));
+dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;
+dom.cloudTiles.style.opacity=String(state.cloudOpacity);
+updateOverlayUI();
+if(state.showRain)void loadRadar();
 refreshView();loadModelsForView();
 if('serviceWorker' in navigator&&!new URLSearchParams(location.search).has('no-sw')&&(location.protocol==='https:'||location.hostname==='localhost')){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
 // Unit and browser tests can inspect the state with ?test=1; no production dependency.
 if(new URLSearchParams(location.search).has('test'))window.openwetterTest={state,setSelectedTime,setHorizon,setMode,setView,setPlace,
-  selectModel,renderMap,drawGraphs,updateCursor,pickGestureAxis};
+  selectModel,renderMap,drawGraphs,updateCursor,pickGestureAxis,toggleObservation};

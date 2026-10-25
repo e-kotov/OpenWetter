@@ -6,6 +6,10 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
+import android.view.WindowInsets;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.GeolocationPermissions;
@@ -29,17 +33,61 @@ public class MainActivity extends Activity {
     private static final String APP_HOST = "appassets.androidplatform.net";
     private static final int GEO_REQUEST = 410;
     private WebView webView;
+    private FrameLayout appContent;
     private String pendingGeoOrigin;
     private GeolocationPermissions.Callback pendingGeoCallback;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(Color.rgb(12,23,40));
-        getWindow().setNavigationBarColor(Color.rgb(16,28,46));
+        // Android 15+ draws apps behind the status / navigation bars when targeting 35.
+        // Make this explicit across supported versions and apply real system insets below;
+        // do not rely on CSS safe-area values inside an Android WebView.
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+
+        appContent = new FrameLayout(this);
+        appContent.setBackgroundColor(Color.rgb(12, 23, 40));
+        appContent.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left, top, right, bottom;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                left = bars.left; top = bars.top; right = bars.right; bottom = bars.bottom;
+                // Keep the location search visible above the on-screen keyboard too.
+                if (insets.isVisible(WindowInsets.Type.ime())) {
+                    bottom = Math.max(bottom, insets.getInsets(WindowInsets.Type.ime()).bottom);
+                }
+            } else {
+                left = insets.getSystemWindowInsetLeft();
+                top = insets.getSystemWindowInsetTop();
+                right = insets.getSystemWindowInsetRight();
+                bottom = insets.getSystemWindowInsetBottom();
+                if (Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
+                    left = Math.max(left, insets.getDisplayCutout().getSafeInsetLeft());
+                    top = Math.max(top, insets.getDisplayCutout().getSafeInsetTop());
+                    right = Math.max(right, insets.getDisplayCutout().getSafeInsetRight());
+                    bottom = Math.max(bottom, insets.getDisplayCutout().getSafeInsetBottom());
+                }
+            }
+            view.setPadding(left, top, right, bottom);
+            return Build.VERSION.SDK_INT >= 30 ? WindowInsets.CONSUMED : insets.consumeSystemWindowInsets();
+        });
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(16,28,46));
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        setContentView(webView);
+        appContent.addView(webView, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(appContent);
+        appContent.requestApplyInsets();
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);

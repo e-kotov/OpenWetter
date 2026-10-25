@@ -113,3 +113,23 @@ export function unmercator(x,y,zoom){
   const scale=256*2**zoom;
   return {lon:wrappedLongitude(x/scale*360-180),lat:Math.atan(Math.sinh(Math.PI*(1-2*y/scale)))*180/Math.PI};
 }
+
+// Render public DWD Meteosat imagery as transparent XYZ tiles in Web Mercator.
+// This is an OBSERVATION overlay, not ICON forecast cloud cover.
+export const DWD_SATELLITE_CLOUDS = 'dwd:Satellite_meteosat_1km_euat_rgb_clouds_day_and_night';
+export function dwdWmsTileURL(layer, zoom, x, y) {
+  if (layer !== DWD_SATELLITE_CLOUDS) throw new Error('Unsupported DWD WMS layer');
+  if (!Number.isInteger(zoom) || zoom < 0 || zoom > 14 ||
+      !Number.isInteger(x) || !Number.isInteger(y) || y < 0 || y >= 2**zoom)
+    throw new Error('Invalid tile position');
+  const count=2**zoom, xx=((x%count)+count)%count;
+  const extent=20037508.342789244, tileSpan=2*extent/count;
+  const left=-extent+xx*tileSpan, right=left+tileSpan,
+    top=extent-y*tileSpan, bottom=top-tileSpan;
+  const params=new URLSearchParams({
+    SERVICE:'WMS',VERSION:'1.1.1',REQUEST:'GetMap',LAYERS:layer,STYLES:'',
+    FORMAT:'image/png',TRANSPARENT:'TRUE',SRS:'EPSG:3857',
+    BBOX:[left,bottom,right,top].join(','),WIDTH:'256',HEIGHT:'256',
+  });
+  return `https://maps.dwd.de/geoserver/dwd/wms?${params.toString()}`;
+}

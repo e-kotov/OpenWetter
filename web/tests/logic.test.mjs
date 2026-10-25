@@ -4,6 +4,7 @@ import {
   MODELS, MODEL_IDS, forecastURL, parseForecast, nearestIndex, valueAtTime,
   axisLimits, hourFloor, pickGestureAxis, scrubTimestamp, forecastBounds,
   timelinePosition, placeKey, mercator, unmercator, radarTileURL, safeRadarMetadata,
+  DWD_SATELLITE_CLOUDS, dwdWmsTileURL,
 } from '../logic.mjs';
 
 function data(){
@@ -93,4 +94,21 @@ test('Radar hosts are validated, frames are sorted and tile requests bounded',()
   assert.match(radarTileURL(meta,0,7,24,62),/^https:\/\/tilecache\.rainviewer\.com/);
   assert.equal(radarTileURL(meta,0,7,2,-1),null);
   assert.throws(()=>safeRadarMetadata({host:'https://evil.test',radar:{past:[]}}));
+});
+
+test('Meteosat overlay requests DWD transparent WMS tiles with correct Web-Mercator boxes',()=>{
+  const u=new URL(dwdWmsTileURL(DWD_SATELLITE_CLOUDS,0,0,0));
+  assert.equal(u.hostname,'maps.dwd.de');
+  assert.equal(u.searchParams.get('LAYERS'),DWD_SATELLITE_CLOUDS);
+  assert.equal(u.searchParams.get('TRANSPARENT'),'TRUE');
+  assert.equal(u.searchParams.get('FORMAT'),'image/png');
+  assert.equal(u.searchParams.get('SRS'),'EPSG:3857');
+  assert.equal(u.searchParams.get('REQUEST'),'GetMap');
+  const bbox=u.searchParams.get('BBOX').split(',').map(Number);
+  assert.ok(bbox[0]<-20037508&&bbox[2]>20037508);
+  assert.ok(bbox[1]<-20037508&&bbox[3]>20037508);
+  assert.equal(dwdWmsTileURL(DWD_SATELLITE_CLOUDS,4,0,2),
+               dwdWmsTileURL(DWD_SATELLITE_CLOUDS,4,16,2));
+  assert.throws(()=>dwdWmsTileURL('dwd:OtherLayer',4,1,1),/Unsupported/);
+  assert.throws(()=>dwdWmsTileURL(DWD_SATELLITE_CLOUDS,4,1,-1),/Invalid/);
 });
