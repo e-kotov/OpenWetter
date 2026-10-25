@@ -1226,4 +1226,4 @@ if('serviceWorker' in navigator&&!new URLSearchParams(location.search).has('no-s
 }
 // Unit and browser tests can inspect the state with ?test=1; no production dependency.
 if(new URLSearchParams(location.search).has('test'))window.openwetterTest={state,setSelectedTime,setHorizon,setMode,setView,setPlace,
-  selectModel,renderMap,drawGraphs,updateCursor,combinedFrames,setContinuousIndex,pickGestureAxis,toggleObservation,toggleNativeLayer,applyNativeGridForecast};
+  selectModel,renderMap,drawGraphs,updateCursor,chartBounds,chartTime,combinedFrames,setContinuousIndex,pickGestureAxis,toggleObservation,toggleNativeLayer,applyNativeGridForecast};
