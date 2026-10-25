@@ -433,8 +433,18 @@ def ui(kind,viewport,browser):
     page.locator('#settingsBtn').click()
     page.locator('#smoothFrames').check()
     page.locator('#settingsBtn').click()
+    # Past-model values remain available alongside the radar map, without
+    # pretending that wind, temperature or cloud cover came from the radar.
+    assert page.evaluate('openwetterTest.state.pastForecasts.icon_eu?.hourly.time.length')==9
+    assert 'Past ICON estimates' in page.locator('#plotsHeading').inner_text()
+    assert 'past: ICON model' in page.locator('#graphStack .plot-row').first.inner_text()
+    chart_start=page.evaluate('openwetterTest.chartBounds().min')
+    assert chart_start<state('anchor')
+    assert page.evaluate('openwetterTest.chartTime()')==state('radar.frames[0].time')
     # New continuous playback keeps true observations before forecasts and blends the source boundary.
     page.locator('#modeContinuous').click()
+    assert 'Past ICON estimates' in page.locator('#plotsHeading').inner_text()
+    assert state('pastForecasts.icon_eu.hourly.temperature_2m.length')==9
     assert state('mode')=='continuous'
     assert page.locator('#modeContinuous').get_attribute('aria-pressed')=='true'
     combined=page.evaluate('openwetterTest.combinedFrames()')
@@ -451,6 +461,12 @@ def ui(kind,viewport,browser):
     page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
     input_range(page,'#timeSlider',first_forecast-1)
     assert state('continuousCursor.kind')=='radar'
+    page.wait_for_function('''()=>{
+      const b=openwetterTest.chartBounds(),t=openwetterTest.chartTime();
+      const cursor=document.querySelector('.plot-cursor');
+      return Math.abs(parseFloat(cursor.style.left)-(t-b.min)/(b.max-b.min)*100)<0.08;
+    }''')
+    assert 'ICON estimate' in page.locator('#heroTime').inner_text()
     page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
     page.wait_for_timeout(450)
     page.locator('#modeForecast').click()  # Explicitly switch back to future model predictions.
