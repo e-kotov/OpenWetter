@@ -21,6 +21,7 @@ test('Only three German DWD ICON models, all with usable API URLs',()=>{
     assert.equal(u.pathname,'/v1/dwd-icon');
     assert.equal(u.searchParams.get('models'),model);
     assert.equal(Number(u.searchParams.get('forecast_hours')),MODELS[model].hours);
+    assert.equal(u.searchParams.get('past_hours'),'9');
   }
   assert.throws(()=>forecastURL({latitude:200,longitude:7,model:'icon_d2'}));
   assert.throws(()=>forecastURL({latitude:52,longitude:7,model:'noaa'}));

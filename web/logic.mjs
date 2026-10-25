@@ -26,7 +26,7 @@ export function forecastURL({latitude,longitude,model}) {
   if(!Object.hasOwn(MODELS,model))throw new RangeError(`Unknown model: ${model}`);
   if(!Number.isFinite(latitude)||!Number.isFinite(longitude)||Math.abs(latitude)>90||Math.abs(longitude)>180)throw new RangeError('Invalid coordinates');
   const params=new URLSearchParams({latitude:String(latitude),longitude:String(longitude),hourly:HOURLY,
-    models:model,forecast_hours:String(MODELS[model].hours),timezone:'auto',timeformat:'unixtime'});
+    models:model,forecast_hours:String(MODELS[model].hours),past_hours:'9',timezone:'auto',timeformat:'unixtime'});
   return `https://api.open-meteo.com/v1/dwd-icon?${params}`;
 }
 export function parseForecast(data) {
