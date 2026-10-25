@@ -86,6 +86,24 @@ Switch models using the existing top model selector to compare native D2 spatial
 
 The beta prereleases are built using the **permanent private signing key** provisioned by GitHub Actions and stored encrypted in this repository. Android will accept later higher-version release builds signed by the same certificate as in-place updates. The existing alpha.6 debug build has a different signing identity, so it requires a one-time uninstall before the first beta installation. Google Play Protect may still offer scans for GitHub-installed APKs.
 
+## Six-hour weather history in charts (beta.6)
+
+In **Radar** or **Radar → forecast** map mode, the temperature, wind, cloud,
+and precipitation plots include the same recent time window as the radar map,
+with a clearly marked *now* boundary and a synchronized radar-time cursor.
+The past uses up to nine hours of **archived ICON model estimates** retrieved
+through Open-Meteo's DWD API (`past_hours=9`), rather than mislabelling
+radar imagery as a source of measured temperature, wind, or cloud cover.
+Historical precipitation bars are **ICON modelled rainfall, not measured
+RADOLAN precipitation totals**. Forecasts after now retain the existing
+native DWD-derived ICON-D2 point series where available.
+
+Past estimated data use muted/dashed chart styling, are never extrapolated or
+invented if unavailable, and remain separate from forecast values. Tapping
+a past graph position moves the corresponding radar map timestamp rather
+than unexpectedly switching to forecast mode. The independent future-only
+forecast mode and model-comparison view remain intact.
+
 ## Continuous radar-to-forecast playback (beta.5)
 
 Select **▶ Radar → forecast** above the map to play a single chronological
