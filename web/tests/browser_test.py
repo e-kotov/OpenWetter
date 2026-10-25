@@ -389,6 +389,14 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[5].time')
     assert 'loading' not in page.locator('#mapModelName').inner_text()
     assert state('radarIndex')==5
+    print("RADAR FADE DIAGNOSTICS",page.evaluate("""()=>{
+      const fade=document.querySelector('#radarTransitionCanvas');
+      const front=document.querySelector('#radarCanvas');
+      return {from:fade.dataset.fromFrame,to:fade.dataset.toFrame,attempt:fade.dataset.lastAttempt,
+        hidden:fade.hidden,active:front.dataset.weatherFrame,frontOpacity:getComputedStyle(front).opacity,
+        fadeOpacity:getComputedStyle(fade).opacity,media:matchMedia('(prefers-reduced-motion: reduce)').matches,
+        sceneMode:openwetterTest.state.mode};
+    }"""),flush=True)
     page.wait_for_function('''()=>{
       const old=document.querySelector('#radarTransitionCanvas');
       return old.dataset.fromFrame&&old.dataset.toFrame==='observed:'+openwetterTest.state.radar.frames[5].time;
