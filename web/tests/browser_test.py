@@ -417,7 +417,8 @@ def verify_grids_survive_point_api_abort(browser):
     assert page.locator('#graphStack .plot-row').count()==4
     assert page.locator('#heroTemp').inner_text()=='11°'
     assert page.locator('#quickCloud').inner_text()=='60%'
-    assert page.locator('#quickRain').inner_text()=='0.2 mm'
+    page.evaluate('openwetterTest.setSelectedTime(openwetterTest.state.anchor+3600)')
+    assert page.locator('#quickRain').inner_text()=='0.8 mm'
     assert page.locator('#quickWind').inner_text()=='— km/h'
     assert page.evaluate('openwetterTest.state.forecasts.icon_d2.hourly.cloud_cover[10]')==60
     assert page.evaluate('openwetterTest.state.forecasts.icon_d2.hourly.temperature_2m[10]')==11
