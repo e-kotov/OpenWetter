@@ -2,7 +2,7 @@
 
 Experimental Android and browser weather application. Real **Deutscher Wetterdienst (DWD) ICON-D2** rain and cloud forecasts, 1 km observed DWD radar, and synchronized time scrubbing. The source is MIT-licensed; DWD data and third-party base maps have their own terms.
 
-## Current alpha.6 features
+## Current beta.3 features
 
 - **Real DWD ICON-D2 model data:** 193 predicted precipitation frames at **15-minute** intervals covering 48 hours; 49 hourly cloud and 2-metre temperature frames. Sources are native GRIB2 fields processed by `tools/produce_icon.py`, not simulated forecasts.
 - **High-detail map:** DWD's approximately 2.1 km unstructured triangular mesh is sampled into a 0.0125° latitude–longitude grid for display. This preserves substantially more native spatial detail than alpha.3's 0.05° grid, but the display mesh must not be misrepresented as weather information finer than the original ICON model.
@@ -84,7 +84,7 @@ Switch models using the existing top model selector to compare native D2 spatial
 
 ## Signing rollout
 
-The beta.1 prerelease is built using the **permanent private signing key** provisioned by GitHub Actions and stored encrypted in this repository. Android will accept later higher-version release builds signed by the same certificate as in-place updates. The existing alpha.6 debug build has a different signing identity, so it requires a one-time uninstall before the first beta installation. Google Play Protect may still offer scans for GitHub-installed APKs.
+The beta prereleases are built using the **permanent private signing key** provisioned by GitHub Actions and stored encrypted in this repository. Android will accept later higher-version release builds signed by the same certificate as in-place updates. The existing alpha.6 debug build has a different signing identity, so it requires a one-time uninstall before the first beta installation. Google Play Protect may still offer scans for GitHub-installed APKs.
 
 ## Radar observation history and forecast separation
 
