@@ -30,6 +30,11 @@ export function createWeatherCrossfade(front,outgoing,{
         window.matchMedia('(prefers-reduced-motion: reduce)').matches)
     });
     const token=++revision;
+    outgoing.dataset.lastAttempt=[
+      String(lastFrame),String(frameKey),String(lastScene===sceneKey),
+      String(resized),String(enabled()),
+      String(typeof window.matchMedia==='function'&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+    ].join('|');
     const alpha=targetAlpha();
     if(blend&&front.width&&front.height){
       // Snapshot the currently visible mixed frame. This avoids a jump when
