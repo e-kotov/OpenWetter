@@ -891,8 +891,12 @@ function drawGraphs(){
     const w=r.width,h=r.height,plotH=h-15;
     ctx.clearRect(0,0,w,h);
     const model=body.dataset.model,metric=body.dataset.metric;
-    const f=state.forecasts[model],{min,max}=timeBounds();
+    const f=state.forecasts[model],history=state.pastForecasts[model],{min,max}=chartBounds();
     const x=t=>timelinePosition(t,min,max)*w;
+    const hasPast=min<state.anchor;
+    if(hasPast){
+      ctx.fillStyle='#33536b45';ctx.fillRect(0,0,x(state.anchor),plotH);
+    }
     for(let i=0;i<=state.horizon;i+=24){
       const x0=x(min+i*3600),x1=x(Math.min(max,min+(i+24)*3600));
       if((i/24)%2===1){ctx.fillStyle='#1a324b';ctx.fillRect(x0,0,x1-x0,plotH);}
@@ -901,58 +905,87 @@ function drawGraphs(){
     for(let j=1;j<=3;j++){const y=plotH*j/4;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
     const tick=state.horizon===48?12:24;
     for(let hours=0;hours<=state.horizon;hours+=tick){
-      const xx=x(min+hours*3600);
+      const t=state.anchor+hours*3600,xx=x(t);
+      if(xx<0||xx>w)continue;
       ctx.strokeStyle='#48637c66';ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,plotH);ctx.stroke();
       ctx.textAlign=hours===0?'left':hours===state.horizon?'right':'center';
       ctx.fillStyle='#a3bad3';ctx.font='10px system-ui';
-      ctx.fillText(formatTime(min+hours*3600,{weekday:'short',hour:'2-digit'}),xx,h-3);
+      ctx.fillText(formatTime(t,{weekday:'short',hour:'2-digit'}),xx,h-3);
     }
-    if(!f)continue;
+    if(hasPast){
+      ctx.strokeStyle='#a7d8f0';ctx.lineWidth=1.25;ctx.setLineDash([3,2]);ctx.beginPath();
+      ctx.moveTo(x(state.anchor),0);ctx.lineTo(x(state.anchor),plotH);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle='#c8d8e7';ctx.font='9px system-ui';ctx.textAlign='left';
+      ctx.fillText('PAST · ICON estimate',5,10);
+      ctx.textAlign='right';ctx.fillText('FORECAST',w-5,10);
+      ctx.textAlign='left';ctx.fillText(formatTime(min,{hour:'2-digit',minute:'2-digit'}),0,h-3);
+    }
+    if(!f&&!history)continue;
     const plot=(variable,{opacity=1,lineWidth=1.7,fill=false}={})=>{
-      const dataset=plotAreaData(f,variable,min,max);
-      const valid=dataset.map(x=>x.v).filter(v=>typeof v==='number'&&Number.isFinite(v));
+      const series=chartSeries(f,hasPast?history:null,VARIABLES[variable].key,min,max,state.anchor);
+      const valid=[...series.past,...series.future].map(d=>d.v).filter(Number.isFinite);
       const {min:ymin,max:ymax}=axisLimits(valid,variable);
       const scale=v=>plotH-3-((v-ymin)/(ymax-ymin))*(plotH-9);
       const color=VARIABLES[variable].color;
-      if(VARIABLES[variable].chart==='bar'){
-        const barWidth=Math.max(1.5,Math.min(13,w*3600/(max-min)*.8));
-        ctx.fillStyle=color;ctx.globalAlpha=opacity;
-        for(const {t,v}of dataset)if(Number.isFinite(v)&&v>0){const xx=x(t);ctx.fillRect(xx-barWidth/2,scale(v),barWidth,Math.max(1,scale(0)-scale(v)));}
-      }else{
-        ctx.beginPath();let drawing=false,firstX=0,lastX=0;
-        for(const {t,v}of dataset){
-          if(typeof v!=='number'||!Number.isFinite(v)){drawing=false;continue;}
-          const xx=x(t),yy=scale(v);
-          if(!drawing){ctx.moveTo(xx,yy);drawing=true;if(!firstX)firstX=xx;}else ctx.lineTo(xx,yy);
-          lastX=xx;
+      const renderSegment=(dataset,historical)=>{
+        if(!dataset.length)return;
+        if(VARIABLES[variable].chart==='bar'){
+          const barWidth=Math.max(1.5,Math.min(13,w*3600/(max-min)*.8));
+          ctx.fillStyle=color;ctx.globalAlpha=opacity*(historical?.46:1);
+          for(const {t,v}of dataset)if(Number.isFinite(v)&&v>0){
+            const xx=x(t);ctx.fillRect(xx-barWidth/2,scale(v),barWidth,Math.max(1,scale(0)-scale(v)));
+          }
+        }else{
+          ctx.beginPath();let drawing=false,firstX=null,lastX=null;
+          for(const {t,v}of dataset){
+            if(!Number.isFinite(v)){drawing=false;continue;}
+            const xx=x(t),yy=scale(v);
+            if(!drawing){ctx.moveTo(xx,yy);drawing=true;if(firstX===null)firstX=xx;}
+            else ctx.lineTo(xx,yy);
+            lastX=xx;
+          }
+          if(fill&&firstX!==null&&lastX!==null){
+            ctx.lineTo(lastX,plotH);ctx.lineTo(firstX,plotH);ctx.closePath();
+            ctx.fillStyle=color;ctx.globalAlpha=.13*opacity*(historical?.6:1);ctx.fill();
+          }
+          ctx.strokeStyle=color;ctx.globalAlpha=opacity*(historical?.65:1);
+          ctx.lineWidth=lineWidth;ctx.lineJoin='round';
+          ctx.setLineDash(historical?[4,3]:[]);ctx.stroke();ctx.setLineDash([]);
         }
-        if(fill&&valid.length){
-          ctx.lineTo(lastX,plotH);ctx.lineTo(firstX,plotH);ctx.closePath();ctx.fillStyle=color;ctx.globalAlpha=.13*opacity;ctx.fill();
-        }
-        ctx.strokeStyle=color;ctx.globalAlpha=opacity;ctx.lineWidth=lineWidth;ctx.lineJoin='round';ctx.stroke();
-      }
-      ctx.globalAlpha=1;
+        ctx.globalAlpha=1;
+      };
+      renderSegment(series.past,true);
+      renderSegment(series.future,false);
     };
     if(metric==='composite'){
       plot('cloud',{opacity:.52,fill:true,lineWidth:1});
       plot('precipitation',{opacity:.78});
       plot('temperature',{lineWidth:2.1});
     }else plot(metric,{fill:metric==='cloud'});
-    if(f.hourly.time.at(-1)<max-1800){
+    if(f?.hourly?.time?.length&&f.hourly.time.at(-1)<max-1800){
       ctx.fillStyle='#9ebbd044';ctx.fillRect(x(f.hourly.time.at(-1))+2,0,w-x(f.hourly.time.at(-1)),plotH);
     }
   }
   updateCursor();
 }
 function updateCursor(){
-  const {min,max}=timeBounds();
-  const percentage=timelinePosition(state.selectedTime,min,max)*100;
+  const {min,max}=chartBounds();
+  const percentage=timelinePosition(chartTime(),min,max)*100;
   for(const cursor of dom.graphStack.querySelectorAll('.plot-cursor'))cursor.style.left=`${percentage}%`;
 }
 function timeFromGraphPointer(event,body){
-  if(state.mode==='radar'||state.mode==='continuous')setMode('forecast');
   const r=body.getBoundingClientRect();
-  stopPlay();const b=timeBounds();setSelectedTime(b.min+clamp((event.clientX-r.left)/r.width,0,1)*(b.max-b.min));
+  stopPlay();const b=chartBounds(),time=b.min+clamp((event.clientX-r.left)/r.width,0,1)*(b.max-b.min);
+  if(state.mode==='continuous'){
+    const frames=combinedFrames();if(frames.length)setContinuousIndex(nearestIndex(frames.map(f=>f.time),time));
+  }else if(state.mode==='radar'){
+    if(time<=getRadarTime()||time<state.anchor){
+      const times=timeList();if(times.length)setRadarIndex(radarWindowStart()+nearestIndex(times,time));
+    }else{
+      setMode('continuous');const frames=combinedFrames();
+      if(frames.length)setContinuousIndex(nearestIndex(frames.map(f=>f.time),time));
+    }
+  }else setSelectedTime(time);
 }
 function tileLayer(element,items){
   const existing=new Map([...element.children].map(n=>[n.dataset.key,n]));const keys=new Set();
