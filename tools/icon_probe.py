@@ -26,7 +26,7 @@ def listing(url):
 def latest_var_run(variable):
     url=f'{ROOT}{variable}/r/'
     names=listing(url)
-    runs=sorted([x for x in names if re.match(r'^\d{4}-\d\d-\d\dT\d\d:\d\d/])
+    runs=sorted([x for x in names if re.match(r'^\d{4}-\d\d-\d\dT\d\d:\d\d/$', unquote(x))])
     print(variable,'hrefs',names[:35], 'runs',runs[-4:],flush=True)
     if not runs: return None
     return urljoin(url,runs[-1])
