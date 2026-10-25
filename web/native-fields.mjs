@@ -3,6 +3,7 @@
  * radar. It does NOT increase meteorological model resolution or fidelity.
  */
 import {mercator,unmercator,nearestIndex} from './logic.mjs';
+import {weatherDiskCache} from './frame-cache.mjs';
 
 export const ICON_BASE='https://raw.githubusercontent.com/e-kotov/OpenWetter/icon-data/';
 export const RADAR_BASE='https://raw.githubusercontent.com/e-kotov/OpenWetter/radar-data/';
@@ -53,15 +54,40 @@ export function findRasterFile(manifest,field,timestamp){
   const frames=manifest.frames,times=frames.map(f=>f.time);
   const index=nearestIndex(times,timestamp);
   if(index<0 || Math.abs(times[index]-timestamp)>5*60)return null;
-  return {url:manifest.base+frames[index].file+'?stamp='+frames.at(-1).time,
+  // Timestamped DWD RADOLAN files do not change when newer observations arrive.
+  // Do not append the newest timestamp: it would bust caches for all older frames.
+  return {url:manifest.base+frames[index].file,
     index,time:frames[index].time,field,count:manifest.width*manifest.height,bytesPerPixel:2};
 }
-async function decompressGzip(response){
-  if(!response.ok)throw new Error('Weather frame HTTP '+response.status);
-  if(!response.body || typeof DecompressionStream!=='function')throw new Error('This Android WebView requires gzip streaming support');
-  return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+/** Decode stored gzip bytes; the on-disk cache never stores inflated rasters. */
+async function decompressGzip(bytes){
+  if(typeof DecompressionStream!=='function')throw new Error('Android WebView requires gzip streaming support');
+  const body=new Response(bytes).body;
+  if(!body)throw new Error('Compressed raster stream unavailable');
+  return new Response(body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
-/** Synchronous LRU lookup so scrubbing can display a cached frame in the same paint. */
+async function compressedFrame(url,kind,expectedRawLength){
+  const stored=await weatherDiskCache.get(kind,url);
+  if(stored){
+    try{
+      const raw=await decompressGzip(stored);
+      if(raw.byteLength===expectedRawLength)return raw;
+    }catch{/* A corrupt cached frame is repaired by a fresh network response. */}
+  }
+  // Immutable DWD frame URLs may also benefit from Android's normal HTTP cache.
+  // Keep the fetch independent from any individual caller's abort signal:
+  // shared prefetches remain useful if a gesture moves past a frame.
+  const response=await fetch(url,{cache:stored?'reload':'default'});
+  if(!response.ok)throw new Error('Weather frame HTTP '+response.status);
+  const compressed=await response.arrayBuffer();
+  const raw=await decompressGzip(compressed);
+  if(raw.byteLength!==expectedRawLength)throw new Error('Truncated DWD raster frame');
+  // CacheStorage persists in Android WebView even though our service worker is disabled.
+  // If storage is denied or full, the small decoded-RAM LRU still works.
+  await weatherDiskCache.put(kind,url,compressed);
+  return raw;
+}
+/** Synchronous LRU lookup so scrubbing can display a cached frame immediately. */
 export function peekNativeFrame(manifest,field,timestamp){
   const info=findRasterFile(manifest,field,timestamp);
   if(!info)return null;
@@ -74,15 +100,14 @@ export function peekNativeFrame(manifest,field,timestamp){
 export async function downloadNativeFrame(manifest,field,timestamp,{signal}={}){
   const info=findRasterFile(manifest,field,timestamp);
   if(!info)return null;
+  if(signal?.aborted)throw new DOMException('Frame request aborted','AbortError');
   const cached=peekNativeFrame(manifest,field,timestamp);
   if(cached)return cached;
   const cache=caches[manifest.kind];
   if(!cache)throw new Error('Unsupported native weather data type');
   if(!pending.has(info.url)){
     pending.set(info.url,(async()=>{
-      const response=await fetch(info.url,{cache:'no-store',signal});
-      const bytes=await decompressGzip(response);
-      if(bytes.byteLength!==info.count*info.bytesPerPixel)throw new Error('Truncated DWD raster frame');
+      const bytes=await compressedFrame(info.url,manifest.kind,info.count*info.bytesPerPixel);
       const values=info.bytesPerPixel===1?new Uint8Array(bytes):new Uint16Array(bytes);
       cache.set(info.url,values);
       const max=manifest.kind==='radar'?MAX_RADAR_FRAMES:MAX_ICON_FRAMES;
@@ -90,7 +115,42 @@ export async function downloadNativeFrame(manifest,field,timestamp,{signal}={}){
       return values;
     })().finally(()=>pending.delete(info.url)));
   }
-  return {...info,data:await pending.get(info.url)};
+  const data=await pending.get(info.url);
+  if(signal?.aborted)throw new DOMException('Frame request aborted','AbortError');
+  return {...info,data};
+}
+/** Warm entire public weather animation deliberately, never on a metered-data surprise.
+ * ICON temperature is point-series data rather than a map overlay, so preload
+ * only the two displayed forecast layers unless explicitly requested.
+ */
+export async function preloadNativeFrames(manifest,{onProgress,signal,fields}={}){
+  if(!manifest)throw new Error('Load the DWD dataset before preloading');
+  const jobs=[];
+  if(manifest.kind==='radar'){
+    for(const f of [...manifest.frames].reverse())jobs.push({field:'radar',time:f.time});
+  }else{
+    for(const field of fields||['precip','cloud']){
+      if(!['precip','cloud','temp'].includes(field))throw new Error('Unsupported cache field '+field);
+      const spec=field==='precip'?manifest.precipitation:manifest[field];
+      for(let i=0;i<spec.count;i++)jobs.push({field,time:manifest.start+i*spec.interval_minutes*60});
+    }
+  }
+  let done=0,errors=0;
+  for(const job of jobs){
+    if(signal?.aborted)return {done,total:jobs.length,errors,cancelled:true};
+    try{await downloadNativeFrame(manifest,job.field,job.time,{signal});}
+    catch(error){
+      if(signal?.aborted)return {done,total:jobs.length,errors,cancelled:true};
+      errors++;
+    }
+    done++;
+    onProgress?.({done,total:jobs.length,errors});
+  }
+  return {done,total:jobs.length,errors,cancelled:false};
+}
+export async function weatherCacheStats(){
+  const [radar,icon,series]=await Promise.all(['radar','icon','series'].map(k=>weatherDiskCache.stats(k)));
+  return {radar,icon,series};
 }
 export function gridPixel(manifest,latitude,longitude){
   const [west,south,east,north]=manifest.bbox;
@@ -135,8 +195,14 @@ export async function downloadNativePointSeries(manifest,latitude,longitude,{sig
   const p=gridPixel(manifest,latitude,longitude);if(!p)return null;
   const t=manifest.point_series,tx=Math.min(t.tiles_x-1,Math.floor(p.col/t.size)),ty=Math.min(t.tiles_y-1,Math.floor(p.row/t.size));
   const url=manifest.base+t.path.replace('{x:02d}',String(tx).padStart(2,'0')).replace('{y:02d}',String(ty).padStart(2,'0'))+'?run='+encodeURIComponent(manifest.run);
-  const response=await fetch(url,{cache:'no-store',signal});
-  return parsePointSeries(manifest,latitude,longitude,await decompressGzip(response));
+  const cols=Math.min(t.size+(tx===t.tiles_x-1?1:0),manifest.width-tx*t.size);
+  const rows=Math.min(t.size+(ty===t.tiles_y-1?1:0),manifest.height-ty*t.size);
+  const n=cols*rows;
+  const expected=n*(manifest.precipitation.count*2+manifest.cloud.count+manifest.temp.count*2);
+  if(signal?.aborted)throw new DOMException('Point series aborted','AbortError');
+  const bytes=await compressedFrame(url,'series',expected);
+  if(signal?.aborted)throw new DOMException('Point series aborted','AbortError');
+  return parsePointSeries(manifest,latitude,longitude,bytes);
 }
 export function interpolatePointField(hourly,field,time){
   if(!hourly?.time?.length || !Array.isArray(hourly[field]))return null;

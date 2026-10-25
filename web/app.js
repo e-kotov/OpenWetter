@@ -5,7 +5,7 @@ import {
   mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
 } from './logic.mjs';
 import {fetchNativeManifest,downloadNativeFrame,downloadNativePointSeries,
-  paintNativeField,interpolatePointField,peekNativeFrame} from './native-fields.mjs';
+  paintNativeField,interpolatePointField,peekNativeFrame,preloadNativeFrames,weatherCacheStats} from './native-fields.mjs';
 
 const el=id=>document.getElementById(id);
 const fields=[
@@ -18,7 +18,7 @@ const fields=[
   'toggleForecastRain','toggleForecastClouds',
   'mapPin','pinTemp','mapLayerName','mapModelName','modeForecast','modeRadar','zoomIn','zoomOut',
   'resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
-  'placesList','savePlace',
+  'placesList','savePlace','cacheRadarBtn','cacheForecastBtn','cacheProgress',
 ];
 const dom=Object.fromEntries(fields.map(k=>[k,el(k)]));
 const defaultPlace={...DEFAULT_PLACES[0]};
@@ -39,6 +39,7 @@ let cloudWarningIssued=false,pointSeriesEpoch=0,forecastPaintEpoch=0;
 let radarFrameShown=null,radarCanvasPaintKey='',radarRequestKey='',radarRequestController=null;
 let radarRequestTimer=null,radarPrefetchTimer=null,radarRequestSeq=0,radarPrefetchSeq=0;
 let radarPreviousIndex=null;
+let cacheWarmupController=null,cacheWarmupKind=null;
 const pointers=new Map();
 let drag=null;
 const FORECAST_MAX_AGE=45*60_000;
@@ -150,6 +151,60 @@ async function loadRadar(){
     showMessage('');updateTimeUI();requestMap();
   }catch(error){if(!controller.signal.aborted)showMessage('Official DWD rain radar unavailable: '+error.message,true);}
 }
+
+function updateCacheControls(){
+  dom.cacheRadarBtn.textContent=cacheWarmupKind==='radar'?'Cancel radar download':'Cache 2 h radar history (~14 MB)';
+  dom.cacheForecastBtn.textContent=cacheWarmupKind==='icon'?'Cancel forecast download':'Cache ICON rain and cloud maps (~125 MB)';
+  dom.cacheRadarBtn.disabled=Boolean(cacheWarmupKind&&cacheWarmupKind!=='radar');
+  dom.cacheForecastBtn.disabled=Boolean(cacheWarmupKind&&cacheWarmupKind!=='icon');
+}
+async function preloadWeatherCache(kind){
+  if(cacheWarmupKind===kind){
+    cacheWarmupController?.abort();
+    dom.cacheProgress.textContent='Stopping cache download…';
+    return;
+  }
+  if(cacheWarmupKind)return;
+  let manifest=kind==='radar'?state.radar:state.iconGrid;
+  if(!manifest){
+    dom.cacheProgress.textContent='Loading DWD dataset…';
+    if(kind==='radar')await loadRadar();
+    else await loadNativeGrid();
+    manifest=kind==='radar'?state.radar:state.iconGrid;
+  }
+  if(!manifest){
+    dom.cacheProgress.textContent='DWD '+(kind==='radar'?'radar':'forecast')+' dataset unavailable; try again after the feed refreshes.';
+    return;
+  }
+  const existing=await weatherCacheStats();
+  if(!existing[kind].available){
+    dom.cacheProgress.textContent='Persistent storage unavailable in this WebView. Normal on-demand forecast loading still works.';
+    return;
+  }
+  const controller=new AbortController();
+  cacheWarmupController=controller;cacheWarmupKind=kind;updateCacheControls();
+  const label=kind==='radar'?'Radar':'Forecast';
+  try{
+    const outcome=await preloadNativeFrames(manifest,{signal:controller.signal,
+      onProgress:({done,total,errors})=>{
+        if(done%3===0||done===total)
+          dom.cacheProgress.textContent=label+' caching '+done+'/'+total+' frames'+(errors?' ('+errors+' failed)':'')+'…';
+      },
+    });
+    const info=(await weatherCacheStats())[kind];
+    const mb=(info.bytes/(1024*1024)).toFixed(1);
+    dom.cacheProgress.textContent=outcome.cancelled?
+      label+' cache download paused. Already-downloaded frames remain stored.':
+      outcome.errors?label+' cached '+(outcome.total-outcome.errors)+'/'+outcome.total+
+        ' frames ('+mb+' MB on device); missing frames can be retried.':
+      label+' ready: '+outcome.total+' frames ('+mb+' MB compressed) stored on this device.';
+  }catch(error){
+    dom.cacheProgress.textContent=label+' preload: '+error.message;
+  }finally{
+    cacheWarmupController=null;cacheWarmupKind=null;updateCacheControls();
+  }
+}
+
 function closeDrawer(){dom.placesDrawer.hidden=true;dom.drawerScrim.hidden=true;dom.placesBtn.setAttribute('aria-expanded','false');}
 function openDrawer(){renderPlaces();dom.placesDrawer.hidden=false;dom.drawerScrim.hidden=false;dom.placesBtn.setAttribute('aria-expanded','true');}
 function renderPlaces(){
@@ -737,6 +792,8 @@ function wire(){
   dom.toggleForecastClouds.addEventListener('click',()=>toggleNativeLayer('cloud'));
   dom.zoomIn.addEventListener('click',()=>zoom(1));dom.zoomOut.addEventListener('click',()=>zoom(-1));
   dom.resetView.addEventListener('click',()=>{state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;requestMap();});
+  dom.cacheRadarBtn.addEventListener('click',()=>{void preloadWeatherCache('radar');});
+  dom.cacheForecastBtn.addEventListener('click',()=>{void preloadWeatherCache('icon');});
   dom.settingsBtn.addEventListener('click',()=>{
     dom.settingsPanel.hidden=!dom.settingsPanel.hidden;
     dom.settingsBtn.setAttribute('aria-expanded',String(!dom.settingsPanel.hidden));
@@ -811,7 +868,7 @@ dom.radarCanvas.style.opacity=String(state.radarOpacity);
 dom.cloudOpacitySlider.value=String(Math.round(state.cloudOpacity*100));
 dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;
 dom.cloudTiles.style.opacity=String(state.cloudOpacity);
-updateOverlayUI();
+updateOverlayUI();updateCacheControls();
 if(state.showRain)void loadRadar();
 refreshView();loadModelsForView();void loadNativeGrid();
 if('serviceWorker' in navigator&&!new URLSearchParams(location.search).has('no-sw')&&(location.protocol==='https:'||location.hostname==='localhost')){

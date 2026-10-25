@@ -189,3 +189,5 @@ input[type=range]{width:100%;accent-color:#ff5d6e;cursor:pointer;margin:3px 0}
 .native-overlays .overlay-btn[disabled]{opacity:.45;cursor:not-allowed;}
 
 .radar-canvas{z-index:3;pointer-events:none;}
+
+.settings .cache-download{display:block;text-align:left;width:100%;margin:6px 0 8px;white-space:normal;line-height:1.35}.settings .cache-download:disabled{opacity:.55;cursor:wait}.settings .cache-progress{margin:6px 0 2px;overflow-wrap:anywhere}

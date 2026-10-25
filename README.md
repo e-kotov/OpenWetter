@@ -65,3 +65,11 @@ Keep use of the data and map services within their individual terms. No service-
 ## Smooth radar scrubbing
 
 The radar renderer retains the last decoded image while another observed five-minute frame downloads (and labels the actual displayed timestamp during buffering). It processes only the visible geographic crop of the original-resolution radar rather than recolouring the entire country on every gesture, preloads adjacent frames, and limits rapid-gesture network requests. Radar precision and native observed timestamps are unchanged; slower connections can still delay *new* uncached frames.
+
+## Persistent weather caching and offline animation preparation
+
+OpenWetter now stores **compressed real DWD raster frames** in the browser/Android WebView CacheStorage on disk, independently of the small decoded-frame RAM cache. Once downloaded, the same radar observation or ICON forecast frame can be shown again without another network transfer, even after reopening the app, as long as Android retains its site data. Radar frame URLs use immutable observation timestamps; publishing a new five-minute observation no longer changes historical frame URLs. ICON frames remain versioned by forecast cycle. Point-series tiles use the same persistent cache.
+
+In Settings, **Cache 2 h radar history (~14 MB)** preloads the 24 radar observations, and **Cache ICON rain and cloud maps (~125 MB)** preloads the two map layers for a full ICON-D2 cycle (193 quarter-hour precipitation frames plus 49 hourly cloud frames). Preloading is optional; the app otherwise downloads frames on demand and caches them for reuse. Cache buttons can be cancelled and resume by re-running. The compressed-cache entry limits are 30 radar, 315 ICON and 18 point-series objects (roughly a few hundred MB maximum); browser storage quotas or automatic eviction may reduce retention. Basemap imagery is not bulk downloaded.
+
+**Important:** The first visit to an uncached frame still requires network, and its gzip bytes must still be decoded for display. Low-memory phones may evict decoded frames. A stored frame can appear faster without using mobile data, but completely smooth first-time scrubbing of an unprepared dataset is not guaranteed.

@@ -19,9 +19,12 @@ APP = (ROOT/'app.js').read_text()
 logic_url = 'data:text/javascript;base64,'+base64.b64encode(LOGIC.encode()).decode()
 GRID = (ROOT/'icon-grid.mjs').read_text()
 NATIVE = (ROOT/'native-fields.mjs').read_text()
+FRAME_CACHE = (ROOT/'frame-cache.mjs').read_text()
+frame_cache_url = 'data:text/javascript;base64,'+base64.b64encode(FRAME_CACHE.encode()).decode()
 GRID = GRID.replace("from './logic.mjs'", f"from '{logic_url}'")
 grid_url = 'data:text/javascript;base64,'+base64.b64encode(GRID.encode()).decode()
 NATIVE = NATIVE.replace("from './logic.mjs'", f"from '{logic_url}'")
+NATIVE = NATIVE.replace("from './frame-cache.mjs'", f"from '{frame_cache_url}'")
 native_url = 'data:text/javascript;base64,'+base64.b64encode(NATIVE.encode()).decode()
 APP = APP.replace("from './logic.mjs'", f"from '{logic_url}'")
 APP = APP.replace("from './icon-grid.mjs'", f"from '{grid_url}'")
@@ -53,7 +56,22 @@ BOOTSTRAP = r'''async (app64) => {
       relative_humidity_2m:n.map(()=>70),pressure_msl:n.map(()=>1013),
     }};
   };
-  window.__mockCounts=()=>counters;
+  const frameCalls=new Map(),diskStores=new Map();
+  Object.defineProperty(window,'caches',{configurable:true,value:{
+    async open(name){
+      if(!diskStores.has(name)){
+        const map=new Map();
+        diskStores.set(name,{
+          async match(k){return map.get(String(k.url||k))?.clone();},
+          async put(k,response){map.set(String(k.url||k),response.clone());},
+          async keys(){return [...map.keys()].map(k=>new Request(k));},
+          async delete(k){return map.delete(String(k.url||k));},
+        });
+      }
+      return diskStores.get(name);
+    }
+  }});
+  window.__mockCounts=()=>({...counters,radarFiles:Object.fromEntries(frameCalls)});
   window.__delayRadarFrames=false;
   const radarWaiters=[];
   window.__releaseRadarFrames=()=>{window.__delayRadarFrames=false;while(radarWaiters.length)radarWaiters.shift()();};
@@ -72,6 +90,7 @@ BOOTSTRAP = r'''async (app64) => {
        body={schema:1,provider:'DWD',product:'RADOLAN-RY',bbox:[4,47,16,56],width:64,height:48,
          frames:Array.from({length:12},(_,i)=>({time:t-(11-i)*300,file:'frames/'+(t-(11-i)*300)+'.bin.gz'}))};
      }else if(url.includes('/radar-data/frames/')){
+       frameCalls.set(url,(frameCalls.get(url)||0)+1);
        if(window.__delayRadarFrames)await new Promise(resolve=>radarWaiters.push(resolve));
        const array=new Uint16Array(64*48);array.fill(200);
        const gz=new Blob([array]).stream().pipeThrough(new CompressionStream('gzip'));
@@ -296,6 +315,20 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[5].time')
     assert 'loading' not in page.locator('#mapModelName').inner_text()
     assert state('radarIndex')==5
+    # Walk beyond the eight-frame decoded-RAM LRU, then return to an old frame:
+    # it must use persistent compressed storage without a second network fetch.
+    for ix in range(11,-1,-1):
+      input_range(page,'#timeSlider',ix)
+      page.wait_for_function(f'openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[{ix}].time')
+    oldest=state('radar.frames[0].time')
+    oldest_url=f'https://raw.githubusercontent.com/e-kotov/OpenWetter/radar-data/frames/{oldest}.bin.gz'
+    initial_downloads=page.evaluate('(url)=>window.__mockCounts().radarFiles[url]||0',oldest_url)
+    assert initial_downloads==1,initial_downloads
+    input_range(page,'#timeSlider',11)
+    page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[11].time')
+    input_range(page,'#timeSlider',0)
+    page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[0].time')
+    assert page.evaluate('(url)=>window.__mockCounts().radarFiles[url]||0',oldest_url)==1,'Previously viewed radar frame was downloaded twice'
     assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
     page.locator('#toggleRain').click()  # Radar history can also be switched off from the map.
     assert state('mode')=='forecast'

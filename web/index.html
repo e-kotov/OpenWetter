@@ -64,6 +64,10 @@
       <input id="opacitySlider" type="range" min="10" max="100" step="5" value="75" />
       <label for="cloudOpacitySlider">Cloud transparency <output id="cloudOpacityOutput">50%</output></label>
       <input id="cloudOpacitySlider" type="range" min="10" max="100" step="5" value="50" />
+      <div class="setting-title"><strong>Offline weather cache</strong><span>Download once, scrub without repeated transfers</span></div>
+      <button id="cacheRadarBtn" type="button" class="overlay-btn cache-download">Cache 2 h radar history (~14 MB)</button>
+      <button id="cacheForecastBtn" type="button" class="overlay-btn cache-download">Cache ICON rain and cloud maps (~125 MB)</button>
+      <p id="cacheProgress" class="cache-progress" role="status" aria-live="polite">Choose a cache download on Wi-Fi. Radar and forecast maps are also saved automatically as you view them.</p>
     </div>
     <div class="credit-line">Point forecast: <a href="https://open-meteo.com/en/docs/dwd-api" target="_blank" rel="noreferrer">Open-Meteo</a> / <a href="https://www.dwd.de/" target="_blank" rel="noreferrer">DWD</a> · <a href="https://github.com/e-kotov/OpenWetter" target="_blank" rel="noreferrer">Code</a></div>
   </section>
