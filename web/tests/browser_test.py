@@ -19,6 +19,8 @@ APP = (ROOT/'app.js').read_text()
 logic_url = 'data:text/javascript;base64,'+base64.b64encode(LOGIC.encode()).decode()
 GRID = (ROOT/'icon-grid.mjs').read_text()
 NATIVE = (ROOT/'native-fields.mjs').read_text()
+SPATIAL = (ROOT/'spatial-icon.mjs').read_text()
+WMS_EU = (ROOT/'wms-eu.mjs').read_text()
 FRAME_CACHE = (ROOT/'frame-cache.mjs').read_text()
 frame_cache_url = 'data:text/javascript;base64,'+base64.b64encode(FRAME_CACHE.encode()).decode()
 GRID = GRID.replace("from './logic.mjs'", f"from '{logic_url}'")
@@ -26,9 +28,16 @@ grid_url = 'data:text/javascript;base64,'+base64.b64encode(GRID.encode()).decode
 NATIVE = NATIVE.replace("from './logic.mjs'", f"from '{logic_url}'")
 NATIVE = NATIVE.replace("from './frame-cache.mjs'", f"from '{frame_cache_url}'")
 native_url = 'data:text/javascript;base64,'+base64.b64encode(NATIVE.encode()).decode()
+SPATIAL = SPATIAL.replace("from './native-fields.mjs'", f"from '{native_url}'")
+spatial_url = 'data:text/javascript;base64,'+base64.b64encode(SPATIAL.encode()).decode()
+WMS_EU = WMS_EU.replace("from './logic.mjs'", f"from '{logic_url}'")
+WMS_EU = WMS_EU.replace("from './frame-cache.mjs'", f"from '{frame_cache_url}'")
+wms_url = 'data:text/javascript;base64,'+base64.b64encode(WMS_EU.encode()).decode()
 APP = APP.replace("from './logic.mjs'", f"from '{logic_url}'")
 APP = APP.replace("from './icon-grid.mjs'", f"from '{grid_url}'")
 APP = APP.replace("from './native-fields.mjs'", f"from '{native_url}'")
+APP = APP.replace("from './spatial-icon.mjs'", f"from '{spatial_url}'")
+APP = APP.replace("from './wms-eu.mjs'", f"from '{wms_url}'")
 APP = APP.replace("if(new URLSearchParams(location.search).has('test'))window.openwetterTest=", "window.openwetterTest=")
 APP_B64 = base64.b64encode(APP.encode()).decode()
 HTML = HTML.replace('<link rel="stylesheet" href="styles.css"/>', '<style>'+CSS+'</style>')
@@ -39,7 +48,7 @@ HTML = HTML.replace('<link rel="icon" href="icons/icon.svg" type="image/svg+xml"
 BOOTSTRAP = r'''async (app64) => {
   const store=new Map();
   Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k)}});
-  const counters={forecast:{},radar:0,geocode:0};
+  const counters={forecast:{},radar:0,geocode:0,wmsMetadata:0,wmsTiles:0};
   const now=Math.floor(Date.now()/3600000)*3600;
   const forecast=(url)=>{
     const model=new URL(url).searchParams.get('models');
@@ -89,6 +98,24 @@ BOOTSTRAP = r'''async (app64) => {
        counters.radar++;const t=Math.floor(Date.now()/300000)*300;
        body={schema:1,provider:'DWD',product:'RADOLAN-RY',bbox:[4,47,16,56],width:64,height:48,
          frames:Array.from({length:12},(_,i)=>({time:t-(11-i)*300,file:'frames/'+(t-(11-i)*300)+'.bin.gz'}))};
+     }else if(url.includes('/Icon-eu_reg00625_fd_sl_TOTPREC01H/wms?')){
+       counters.wmsMetadata++;
+       const past=new Date((now-86400)*1000).toISOString();
+       const future=new Date((now+78*3600)*1000).toISOString();
+       const run=new Date((now-6*3600)*1000).toISOString();
+       const xml='<WMS_Capabilities><Capability><Layer><Layer><Name>dwd:Icon-eu_reg00625_fd_sl_TOTPREC01H</Name>'+
+         '<Dimension name="time" units="ISO8601">'+past+'/'+future+'/PT1H</Dimension>'+
+         '<Dimension name="REFERENCE_TIME" units="ISO8601" default="'+run+'">'+run+'</Dimension>'+
+         '</Layer></Layer></Capability></WMS_Capabilities>';
+       return new Response(xml,{status:200,headers:{'content-type':'text/xml'}});
+     }else if(url.startsWith('https://maps.dwd.de/geoserver/dwd/wms?')&&
+       new URL(url).searchParams.get('LAYERS')==='dwd:Icon-eu_reg00625_fd_sl_TOTPREC01H'){
+       counters.wmsTiles++;
+       const canvas=document.createElement('canvas');canvas.width=256;canvas.height=256;
+       const c=canvas.getContext('2d');c.fillStyle='rgba(48,145,231,.65)';c.fillRect(0,0,256,256);
+       const binary=atob(canvas.toDataURL('image/png').split(',')[1]);
+       const bytes=Uint8Array.from(binary,ch=>ch.charCodeAt(0));
+       return new Response(bytes,{status:200,headers:{'content-type':'image/png'}});
      }else if(url.includes('/radar-data/frames/')){
        frameCalls.set(url,(frameCalls.get(url)||0)+1);
        if(window.__delayRadarFrames)await new Promise(resolve=>radarWaiters.push(resolve));
@@ -266,6 +293,13 @@ def ui(kind,viewport,browser):
     assert page.locator('#graphStack .plot-row').count()==4
     assert page.locator('#map').is_visible()
     assert page.locator('#modelDescription').inner_text().startswith('ICON-EU')
+    # The native ICON-EU selection now has a lightweight official DWD hourly
+    # precipitation WMS map, never mislabeled as an ICON-D2 grid.
+    page.wait_for_function('openwetterTest.state.euWms?.kind==="icon_eu_wms"')
+    page.wait_for_function('window.__mockCounts().wmsTiles>0')
+    assert 'ICON-EU hourly rain' in page.locator('#mapLayerName').inner_text()
+    assert page.locator('#toggleForecastClouds').is_disabled()
+    assert 'ICON-EU' in page.locator('#timeRange').inner_text()
 
     # Independent map switches show real observed layers; unlike point graphs,
     # their timestamps must NOT pretend to track the ICON forecast slider.

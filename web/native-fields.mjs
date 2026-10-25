@@ -66,7 +66,7 @@ async function decompressGzip(bytes){
   if(!body)throw new Error('Compressed raster stream unavailable');
   return new Response(body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
-async function compressedFrame(url,kind,expectedRawLength){
+export async function compressedFrame(url,kind,expectedRawLength){
   const stored=await weatherDiskCache.get(kind,url);
   if(stored){
     try{

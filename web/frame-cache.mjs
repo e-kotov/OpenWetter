@@ -2,7 +2,7 @@
  * Android WebView disables the service worker, so CacheStorage is used directly.
  * No basemap bulk downloads, private values, API keys or credentials are stored.
  */
-const DEFAULT_LIMITS=Object.freeze({radar:30,icon:315,series:18});
+const DEFAULT_LIMITS=Object.freeze({radar:30,icon:315,series:22,wms:360});
 const MAX_FILE_BYTES=16*1024*1024;
 
 export function createPersistentWeatherCache({
