@@ -23,20 +23,35 @@ jobs:
           python-version: '3.12'
       - name: Install HDF5 radar and projection libraries
         run: python -m pip install numpy h5py pyproj
-      - name: Download and decode latest DWD RY 5-minute radar frames
-        run: python tools/produce_radar.py
-      - name: Publish lossless rain-rate raster frames
+      - name: Reuse previously processed radar frames
         env:
           GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --quiet --depth 1 --branch radar-data \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            /tmp/openwetter-radar-cache
+          mkdir -p radar-data/frames
+          cp -a /tmp/openwetter-radar-cache/frames/. radar-data/frames/
+      - name: Download and decode new DWD RY five-minute radar frames
+        run: python tools/produce_radar.py
+      - name: Publish incremental radar frame changes
         run: |
           set -euo pipefail
           git config --global user.name 'OpenWetter data service'
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          mkdir -p /tmp/openwetter-radar
-          mv radar-data/* /tmp/openwetter-radar/
-          cd /tmp/openwetter-radar
-          git init -b radar-data
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          rsync -a --delete --exclude='.git' radar-data/ /tmp/openwetter-radar-cache/
+          cd /tmp/openwetter-radar-cache
           git add --all
-          git commit -m "Refresh official DWD RADOLAN RY frames ${GITHUB_RUN_ID}"
-          git push --force origin HEAD:refs/heads/radar-data
+          if git diff --cached --quiet; then
+            echo 'No new DWD radar frames'
+            exit 0
+          fi
+          if [ "$((GITHUB_RUN_NUMBER % 144))" -eq 0 ]; then
+            # Periodic history compaction: restart the disposable data branch
+            # from a fresh root without keeping thousands of commits.
+            root=$(printf 'Compact latest DWD radar snapshot\n' | git commit-tree "$(git write-tree)")
+            git push --force origin "${root}:refs/heads/radar-data"
+          else
+            git commit -m "Update DWD 1 km radar five-minute frames ${GITHUB_RUN_ID}"
+            git push origin HEAD:refs/heads/radar-data
+          fi

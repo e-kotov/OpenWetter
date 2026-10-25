@@ -1,0 +1,118 @@
+name: Build independently signed Android APK
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New GitHub release tag (for example v0.1.0-beta.1; must not already exist)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publish as prerelease'
+        type: boolean
+        required: true
+        default: true
+permissions:
+  contents: read
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      OPENWETTER_KEYSTORE_BASE64: ${{ secrets.OPENWETTER_KEYSTORE_BASE64 }}
+      OPENWETTER_KEYSTORE_PASSWORD: ${{ secrets.OPENWETTER_KEYSTORE_PASSWORD }}
+      OPENWETTER_KEY_ALIAS: ${{ secrets.OPENWETTER_KEY_ALIAS }}
+      OPENWETTER_KEY_PASSWORD: ${{ secrets.OPENWETTER_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tag and private signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || {
+            echo '::error::Release tag must be a semantic version (e.g. v0.1.0-beta.1)'; exit 1;
+          }
+          for name in OPENWETTER_KEYSTORE_BASE64 OPENWETTER_KEYSTORE_PASSWORD OPENWETTER_KEY_ALIAS OPENWETTER_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing repository Actions secret: $name"
+              exit 1
+            fi
+          done
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo '::error::Release tag already exists; choose a new version'; exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+      - name: Stamp chosen version into this build (without changing Git history)
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python - <<'PYCODE'
+          import os,re,pathlib
+          path=pathlib.Path('android/app/build.gradle.kts')
+          value=os.environ['RELEASE_TAG'].removeprefix('v')
+          run_number=int(os.environ['GITHUB_RUN_NUMBER'])
+          text=path.read_text()
+          text, n = re.subn(r'versionName\s*=\s*"[^"]+"',f'versionName = "{value}"',text)
+          if n!=1:raise RuntimeError('Cannot find exactly one versionName')
+          text, n = re.subn(r'versionCode\s*=\s*\d+',f'versionCode = {1000+run_number}',text)
+          if n!=1:raise RuntimeError('Cannot find exactly one versionCode')
+          path.write_text(text)
+          PYCODE
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK platform, build tools, and signer
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build unsigned release APK
+        run: gradle -p android :app:assembleRelease --stacktrace
+      - name: Sign with persistent private release certificate
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$OPENWETTER_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/openwetter-release.jks"
+          APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$APK"
+          mkdir -p dist
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$APK" dist/aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks "$RUNNER_TEMP/openwetter-release.jks" \
+            --ks-key-alias "$OPENWETTER_KEY_ALIAS" \
+            --ks-pass env:OPENWETTER_KEYSTORE_PASSWORD \
+            --key-pass env:OPENWETTER_KEY_PASSWORD \
+            --out "dist/OpenWetter-${RELEASE_TAG}.apk" dist/aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify \
+            --verbose --print-certs "dist/OpenWetter-${RELEASE_TAG}.apk"
+          rm -f "$RUNNER_TEMP/openwetter-release.jks" dist/aligned.apk
+          (cd dist && sha256sum "OpenWetter-${RELEASE_TAG}.apk" > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwetter-signed-release
+          path: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish signed GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$PRERELEASE" = true ]; then extra+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" \
+            "dist/OpenWetter-${RELEASE_TAG}.apk" dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "OpenWetter $RELEASE_TAG" \
+            --notes 'Independently release-key-signed Android APK. Keep the signing certificate for future updates. This does not bypass Google Play Protect checks for sideloaded apps.' \
+            "${extra[@]}"

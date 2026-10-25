@@ -1,21 +1,21 @@
-# OpenWetter v0.1.0-alpha.3 — genuine ICON-D2 forecast maps
+# OpenWetter v0.1.0-alpha.4 — native-detail DWD weather previews
 
-Experimental debug-signed Android APK for Android 8.0 and newer.
+Experimental debug-signed Android APK for Android 8.0+; tested by GitHub Actions but not certified on a physical Android device.
 
-## New
-- Rain and cloud map overlays are now derived from actual DWD ICON-D2 GRIB2 spatial fields, not another provider's forecasts.
-- A GitHub Actions data pipeline processes 49 hourly grids and refreshes every six hours on the separate icon-data branch.
-- Rain, cloud and temperature point graphs inside the Germany map region are sampled from exactly the same ICON-D2 grids displayed on the map.
-- Wind values are still from Open-Meteo's DWD ICON-D2 point forecast.
-- The original observed radar/satellite controls remain independent.
-- Map scrubbing and playback select the corresponding gridded forecast hour.
+## Changes
 
-## Important limitations
-- The display grid is **0.05 degrees**, roughly 3–5 km, sampled from native approximately 2 km ICON-D2 data. It is not the original full-resolution ICON-D2 mesh.
-- This initial pipeline supports ICON-D2 only. ICON-EU and ICON Global retain their existing point forecasts; no gridded map for those models yet.
-- The weather-grid service uses raw.githubusercontent.com and needs a network connection and a successful scheduled GitHub Actions run.
-- The data covers 49 hourly model steps. An absent, expired or out-of-domain grid must not be misrepresented as actual forecast fields.
-- Android APK compilation and mocked-browser tests are automated; **live Android device performance and reliability remain to be verified**.
-- Debug signing keys on different CI jobs may be incompatible; uninstall a previous debug preview first if Android blocks installation.
+- DWD ICON-D2 precipitation from **193 real 15-minute GRIB2 frames** (48-hour forecast).
+- Actual DWD ICON-D2 hourly cloud and temperature raster overlays, sampled from the native approximately 2 km mesh onto a 0.0125° display grid.
+- DWD **RADOLAN-RY native 1 km / five-minute** precipitation radar replaces the third-party radar imagery for observed rain.
+- Graph point-series come from the same processed ICON-D2 forecast grid. Wind remains DWD ICON point values from Open-Meteo.
+- Map/radar scrubbing and playback follow the distinct forecast and observed timelines; data frames are loaded on demand.
+- Bounded app raster cache and incremental radar-data publication.
+- Persistent private release signing workflow and [instructions](../../blob/main/SIGNING.md), requiring the owner to generate and configure private GitHub Actions secrets before first use.
 
-The checksum file SHA256SUMS.txt provides the hash of the attached APK.
+## Limitations
+
+This is a **debug-signed preview**; its signing certificate changes across GitHub runners. To make future updates use a persistent certificate, follow SIGNING.md. A stable certificate does not disable Google Play Protect scans for GitHub-downloaded APKs.
+
+ICON-EU/Global still have point forecasts only, the gridded ICON-D2 map covers the Germany region and does not increase the native model's meteorological resolution, and observed cloud satellite imagery is separate from forecast cloud cover. The application needs live data from GitHub data branches and DWD/Open-Meteo servers.
+
+The workflows verify Android compilation, mocked-browser interfaces and the separately published weather datasets. Real Android-device performance remains unverified.

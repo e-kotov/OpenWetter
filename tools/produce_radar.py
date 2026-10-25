@@ -90,7 +90,16 @@ def build(directory='radar-data'):
     lon,lat=np.meshgrid(xs,ys)
     mapping=None
     manifest_frames=[]
+    current={f'{t}.bin.gz' for t,_ in entries}
+    for old in (dest/'frames').glob('*.bin.gz'):
+        if old.name not in current:old.unlink()
     for step,(timestamp,filename) in enumerate(entries):
+        path=f'frames/{timestamp}.bin.gz'
+        cached=dest/path
+        if cached.exists() and cached.stat().st_size>100:
+            manifest_frames.append({'time':timestamp,'file':path})
+            print('Reused previously processed official DWD radar',step+1,'/',len(entries),flush=True)
+            continue
         binary=get_bytes(URL+filename)
         field,proj=metadata_and_values(binary)
         if mapping is None:
@@ -101,7 +110,6 @@ def build(directory='radar-data'):
         row,col,valid=mapping
         grid=np.full((HEIGHT,WIDTH),65535,dtype='<u2')
         grid[valid]=field[row[valid],col[valid]]
-        path=f'frames/{timestamp}.bin.gz'
         (dest/'frames').mkdir(parents=True,exist_ok=True)
         (dest/path).write_bytes(gzip.compress(grid.tobytes(),compresslevel=6,mtime=0))
         manifest_frames.append({'time':timestamp,'file':path})

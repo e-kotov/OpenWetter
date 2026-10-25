@@ -6,7 +6,7 @@ import {mercator,nearestIndex} from './logic.mjs';
 
 export const ICON_BASE='https://raw.githubusercontent.com/e-kotov/OpenWetter/icon-data/';
 export const RADAR_BASE='https://raw.githubusercontent.com/e-kotov/OpenWetter/radar-data/';
-const MAX_FRAMES=18;
+const MAX_FRAMES=6;
 const cache=new Map();
 const pending=new Map();
 const canvasCache=new WeakMap();

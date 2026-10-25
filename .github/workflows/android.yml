@@ -57,7 +57,7 @@ jobs:
 
   publish-prerelease:
     name: Publish Android prerelease
-    if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Publish OpenWetter v0.1.0-alpha.3 prerelease' }}
+    if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Publish OpenWetter v0.1.0-alpha.4 prerelease' }}
     needs: [web-tests, android-build]
     runs-on: ubuntu-latest
     permissions:
@@ -72,18 +72,18 @@ jobs:
       - name: Validate and name APK
         run: |
           test -s dist/app-debug.apk
-          mv dist/app-debug.apk dist/OpenWetter-v0.1.0-alpha.3-debug.apk
-          unzip -t dist/OpenWetter-v0.1.0-alpha.3-debug.apk
-          (cd dist && sha256sum OpenWetter-v0.1.0-alpha.3-debug.apk > SHA256SUMS.txt)
+          mv dist/app-debug.apk dist/OpenWetter-v0.1.0-alpha.4-debug.apk
+          unzip -t dist/OpenWetter-v0.1.0-alpha.4-debug.apk
+          (cd dist && sha256sum OpenWetter-v0.1.0-alpha.4-debug.apk > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
       - name: Publish GitHub prerelease with APK and SHA-256
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create v0.1.0-alpha.3 \
-            dist/OpenWetter-v0.1.0-alpha.3-debug.apk \
+          gh release create v0.1.0-alpha.4 \
+            dist/OpenWetter-v0.1.0-alpha.4-debug.apk \
             dist/SHA256SUMS.txt \
             --target "$GITHUB_SHA" \
-            --title "OpenWetter v0.1.0-alpha.3 (Android preview)" \
+            --title "OpenWetter v0.1.0-alpha.4 (Android preview)" \
             --notes-file .github/RELEASE_NOTES.md \
             --prerelease

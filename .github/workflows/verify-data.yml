@@ -1,0 +1,22 @@
+name: Verify live DWD weather datasets
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/verify_published_data.py
+      - .github/workflows/verify-data.yml
+  schedule:
+    - cron: '45 */6 * * *'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/verify_published_data.py
