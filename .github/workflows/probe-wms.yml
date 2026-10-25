@@ -1,0 +1,20 @@
+name: Verify DWD ICON map tile services
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/probe_wms.py
+      - .github/workflows/probe-wms.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe real EU and D2 WMS metadata and preview tiles
+        run: python tools/probe_wms.py
