@@ -1,20 +1,21 @@
-# OpenWetter v0.1.0-alpha.2 — Android layout fix and observed map overlays
+# OpenWetter v0.1.0-alpha.3 — genuine ICON-D2 forecast maps
 
-This is an experimental **debug-signed** Android APK for Android 8.0 or newer (API 26+). It is not a production release.
+Experimental debug-signed Android APK for Android 8.0 and newer.
 
-## Fixes and changes
-- Fixed header buttons obscured by Android status-bar icons on Android 15+ / targetSdk 35 using dynamic status, navigation, cutout and keyboard insets.
-- Improved narrow-screen header so forecast/compare and settings buttons do not crowd the app title.
-- New independent **☔ Rain radar** switch overlays the most recently available RainViewer radar observation.
-- New **☁ Satellite clouds** switch overlays DWD Meteosat cloud imagery (WMS); adjustable opacity.
-- Radar history remains a separate selectable playback timeline.
-- Added unit and mocked mobile-browser checks for overlays, DWD WMS URL construction, and narrow-screen layouts.
+## New
+- Rain and cloud map overlays are now derived from actual DWD ICON-D2 GRIB2 spatial fields, not another provider's forecasts.
+- A GitHub Actions data pipeline processes 49 hourly grids and refreshes every six hours on the separate icon-data branch.
+- Rain, cloud and temperature point graphs inside the Germany map region are sampled from exactly the same ICON-D2 grids displayed on the map.
+- Wind values are still from Open-Meteo's DWD ICON-D2 point forecast.
+- The original observed radar/satellite controls remain independent.
+- Map scrubbing and playback select the corresponding gridded forecast hour.
 
-**The new map overlays are observations, not ICON forecast rain/cloud fields.** They do not follow the chosen future forecast hour. A true animated ICON gridded weather map is still unimplemented.
+## Important limitations
+- The display grid is **0.05 degrees**, roughly 3–5 km, sampled from native approximately 2 km ICON-D2 data. It is not the original full-resolution ICON-D2 mesh.
+- This initial pipeline supports ICON-D2 only. ICON-EU and ICON Global retain their existing point forecasts; no gridded map for those models yet.
+- The weather-grid service uses raw.githubusercontent.com and needs a network connection and a successful scheduled GitHub Actions run.
+- The data covers 49 hourly model steps. An absent, expired or out-of-domain grid must not be misrepresented as actual forecast fields.
+- Android APK compilation and mocked-browser tests are automated; **live Android device performance and reliability remain to be verified**.
+- Debug signing keys on different CI jobs may be incompatible; uninstall a previous debug preview first if Android blocks installation.
 
-## Installation and limits
-- Download `OpenWetter-v0.1.0-alpha.2-debug.apk` below.
-- This APK uses a GitHub-runner temporary debug-signing key. **Uninstall the previous preview before installing** if Android rejects the update due to a different signature. Uninstalling clears local app settings.
-- Live map imagery needs network access and depends on external data services. Some layers may be temporarily unavailable; the DWD cloud layer has not been tested against the live service on-device.
-- The WebView layout has been updated and Android compilation/automated browser tests run in CI; physical-device verification is still needed.
-- `SHA256SUMS.txt` contains the expected file checksum.
+The checksum file SHA256SUMS.txt provides the hash of the attached APK.
