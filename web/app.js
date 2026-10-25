@@ -415,7 +415,7 @@ function updateOverlayUI(){
   dom.toggleRain.textContent='📡 Latest observed radar (not forecast)';
   dom.toggleClouds.textContent='☁ Latest satellite (observed)';
   dom.radarCanvas.hidden=!visibleRain;
-  if(!visibleRain){crossfades.radar.stop();dom.radarTransitionCanvas.hidden=true;}
+  if(!visibleRain){crossfades.radar.stop();dom.radarTransitionCanvas.hidden=true;radarCanvasPaintKey='';}
   dom.radarTiles.style.display='none';
   dom.cloudTiles.hidden=!state.showClouds;
   const observations=[];
@@ -509,7 +509,7 @@ function prepareRasterCanvas(layer,width,height,ratio){
 }
 function drawShownRadar(ctx,width,height,ratio,map,resized){
   if(!radarFrameShown)return;
-  const key=[radarFrameShown.time,radarFrameShown.manifest.generated_at||'',
+  const key=[state.mode,radarFrameShown.time,radarFrameShown.manifest.generated_at||'',
     width,height,ratio,map.latitude,map.longitude,map.zoom].join('|');
   if(!resized&&radarCanvasPaintKey===key)return;
   const scene=mapViewKey('radar',width,height,ratio,map,
