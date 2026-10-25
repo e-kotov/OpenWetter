@@ -542,7 +542,10 @@ function drawShownRadar(ctx,width,height,ratio,map,resized){
   if(!radarFrameShown)return;
   const key=[state.mode,radarFrameShown.time,radarFrameShown.manifest.generated_at||'',
     width,height,ratio,map.latitude,map.longitude,map.zoom].join('|');
-  if(!resized&&radarCanvasPaintKey===key)return;
+  if(!resized&&radarCanvasPaintKey===key){
+    if(state.mode==='continuous'&&combinedFrame()?.kind==='radar'&&radarFrameShown.time===combinedFrame().time)completeBoundaryTransition('radar');
+    return;
+  }
   const scene=mapViewKey('radar',width,height,ratio,map,
     [state.mode,radarFrameShown.manifest.width,radarFrameShown.manifest.height].join(':'));
   const finish=crossfades.radar.beforeDraw(`observed:${radarFrameShown.time}`,scene,{resized});
