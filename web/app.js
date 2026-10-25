@@ -244,7 +244,8 @@ async function loadRadar(){
   try{
     const metadata=await fetchNativeManifest('radar',{signal:controller.signal});
     if(controller.signal.aborted)return;
-    state.radar={...metadata,fetchedAt:Date.now()};state.radarIndex=metadata.frames.length-1;
+    const hadRadar=Boolean(state.radar);state.radar={...metadata,fetchedAt:Date.now()};state.radarIndex=metadata.frames.length-1;
+    if(state.mode==='continuous'&&!hadRadar&&metadata.frames.length)state.continuousCursor={kind:'radar',time:metadata.frames.at(-1).time};
     showMessage('');updateTimeUI();requestMap();
   }catch(error){if(!controller.signal.aborted)showMessage('Official DWD rain radar unavailable: '+error.message,true);}
 }
@@ -409,7 +410,9 @@ function setRadarHours(hours){
 function setMode(mode){
   if(!['forecast','radar','continuous'].includes(mode))return;
   stopPlay();state.mode=mode;
-  if(mode==='continuous')state.continuousCursor=combinedFrame()||combinedFrames()[0]||null;
+  if(mode==='continuous'){
+    const entries=combinedFrames();state.continuousCursor=entries.findLast(f=>f.kind==='radar')||entries[0]||null;
+  }
   dom.modeContinuous.classList.toggle('active',mode==='continuous');
   dom.modeContinuous.setAttribute('aria-pressed',String(mode==='continuous'));
   dom.modeForecast.classList.toggle('active',mode==='forecast');dom.modeRadar.classList.toggle('active',mode==='radar');
