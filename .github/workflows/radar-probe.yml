@@ -1,0 +1,21 @@
+name: Probe native DWD radar feed
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/radar_probe.py
+      - .github/workflows/radar-probe.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install h5py numpy
+      - name: Inspect RADOLAN RY HDF5 metadata and projection
+        run: python tools/radar_probe.py
