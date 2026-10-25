@@ -5,7 +5,8 @@ import {
   mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
 } from './logic.mjs';
 import {fetchNativeManifest,downloadNativeFrame,downloadNativePointSeries,
-  paintNativeField,interpolatePointField,peekNativeFrame,preloadNativeFrames,weatherCacheStats} from './native-fields.mjs';
+  paintNativeField,interpolatePointField,peekNativeFrame,preloadNativeFrames,weatherCacheStats,
+  composeIconD2Forecast} from './native-fields.mjs';
 import {visibleIconSpatialTiles,downloadIconSpatialTile,paintIconSpatialTile,
   preloadIconSpatialViewport} from './spatial-icon.mjs';
 import {fetchIconEuCapabilities,paintIconEuWms,iconEuValidTime} from './wms-eu.mjs';
@@ -98,17 +99,42 @@ function timelineStep(){return state.mode==='forecast'&&state.model==='icon_d2'&
 function requestMap(){if(!mapRedrawRequest)mapRedrawRequest=requestAnimationFrame(()=>{mapRedrawRequest=0;renderMap();});}
 function requestGraphs(){if(!graphRedrawRequest)graphRedrawRequest=requestAnimationFrame(()=>{graphRedrawRequest=0;drawGraphs();});}
 function requestCursor(){if(!forecastCursorRequest)forecastCursorRequest=requestAnimationFrame(()=>{forecastCursorRequest=0;updateCursor();});}
-async function getJson(url,signal,ms=18000){
+/** Bounded forecast API request; distinguish timeouts from deliberate
+ * cancellation (e.g. switching locations). Never surface the browser's
+ * misleading "signal is aborted without reason" as a weather-model failure.
+ */
+async function getJson(url,signal,ms=25000){
   const abort=new AbortController();
-  const onAbort=()=>abort.abort();signal?.addEventListener('abort',onAbort,{once:true});
-  const timeout=setTimeout(()=>abort.abort(),ms);
+  const onAbort=()=>abort.abort(signal?.reason||new DOMException('Request cancelled','AbortError'));
+  if(signal?.aborted)onAbort();
+  else signal?.addEventListener('abort',onAbort,{once:true});
+  const timeout=setTimeout(()=>
+    abort.abort(new DOMException('Forecast request timed out','TimeoutError')),ms);
   try{
     const response=await fetch(url,{signal:abort.signal});
     if(!response.ok)throw new Error(`HTTP ${response.status}`);
     const json=await response.json();
     if(json?.error)throw new Error(json.reason||'API rejected request');
     return json;
+  }catch(error){
+    if(!signal?.aborted&&abort.signal.aborted)
+      throw new Error(`Forecast request timed out after ${Math.round(ms/1000)} seconds`);
+    throw error;
   }finally{clearTimeout(timeout);signal?.removeEventListener('abort',onAbort);}
+}
+async function getPointForecastJson(url,signal){
+  let last;
+  for(const ms of [25000,35000]){
+    try{return await getJson(url,signal,ms);}
+    catch(error){
+      if(signal?.aborted)throw error;
+      last=error;
+      // Retry timeouts and temporary server/network errors, not invalid requests.
+      if(!/timed out|abort|network|failed to fetch|HTTP (408|429|5\d\d)/i.test(error.message||''))
+        throw error;
+    }
+  }
+  throw last;
 }
 function cacheId(model){return `openwetter.forecast.v2.${model}.${placeKey(state.place)}`;}
 function cachedModel(model){
@@ -119,13 +145,16 @@ function cachedModel(model){
   return null;
 }
 async function loadModel(model,epoch=fetchEpoch){
-  if(state.forecasts[model]&&Date.now()-state.forecasts[model].fetchedAt<FORECAST_MAX_AGE)return;
+  // A grid-only ICON-D2 forecast is useful but still needs a point-API attempt
+  // to populate wind. It must not suppress later retries for 45 minutes.
+  if(state.forecasts[model]&&!state.forecasts[model].gridOnly&&
+      Date.now()-state.forecasts[model].fetchedAt<FORECAST_MAX_AGE)return;
   if(state.loadingModels.has(model))return;
   const controller=new AbortController();fetchControllers.set(model,controller);
   state.loadingModels.add(model);delete state.modelErrors[model];renderGraphs();
   if(model===state.model)showMessage(`Loading DWD ${MODELS[model].label} forecast…`);
   try{
-    const result=parseForecast(await getJson(forecastURL({...state.place,model}),controller.signal));
+    const result=parseForecast(await getPointForecastJson(forecastURL({...state.place,model}),controller.signal));
     if(controller.signal.aborted||epoch!==fetchEpoch)return;
     state.forecasts[model]={...result,fetchedAt:Date.now()};
     if(model==='icon_d2')applyNativeGridForecast();
@@ -133,10 +162,29 @@ async function loadModel(model,epoch=fetchEpoch){
     if(model===state.model){state.forecast=state.forecasts[model];showMessage('');}
   }catch(error){
     if(controller.signal.aborted||epoch!==fetchEpoch)return;
-    const fallback=cachedModel(model);
-    if(fallback){state.forecasts[model]=fallback;state.modelErrors[model]='Cached data (offline or stale)';}
-    else state.modelErrors[model]=`Unavailable: ${error.message}`;
-    if(model===state.model){state.forecast=state.forecasts[model]||null;showMessage(`${MODELS[model].label}: ${state.modelErrors[model]}`,true);}
+    const cached=cachedModel(model);
+    // Keep already-available DWD grid graphs, even if the optional wind
+    // provider is offline or times out. A point error must not blank them.
+    if(cached)state.forecasts[model]={...cached,fetchedAt:Date.now()};
+    if(model==='icon_d2'&&state.gridSeries)applyNativeGridForecast();
+    const usable=state.forecasts[model];
+    if(usable){
+      state.modelErrors[model]=usable.gridOnly?
+        'Only wind/ancillary forecast data are temporarily unavailable':
+        'Using cached point forecast';
+      if(model===state.model){
+        state.forecast=usable;
+        showMessage(usable.gridOnly?
+          'DWD ICON-D2 temperature, rain and clouds ready; wind data temporarily unavailable.':
+          `${MODELS[model].label}: using cached data until the forecast service responds.`);
+      }
+    }else{
+      state.modelErrors[model]=`Unavailable: ${error.message}`;
+      if(model===state.model){
+        state.forecast=null;
+        showMessage(`${MODELS[model].label}: ${state.modelErrors[model]}`,true);
+      }
+    }
   }finally{
     if(epoch===fetchEpoch){state.loadingModels.delete(model);fetchControllers.delete(model);refreshView();}
   }
@@ -358,18 +406,22 @@ function toggleObservation(which){
 }
 
 function applyNativeGridForecast(){
-  const model=state.forecasts.icon_d2,series=state.gridSeries,grid=state.iconGrid;
-  if(!model||!series||!grid)return;
-  const source=model.rawPointForecast||model;
-  const hourly={time:series.time,temperature_2m:series.temperature_2m,
-    precipitation:series.precipitation,cloud_cover:series.cloud_cover};
-  for(const [name,values] of Object.entries(source.hourly)){
-    if(name==='time'||Object.hasOwn(hourly,name))continue;
-    if(Array.isArray(values))hourly[name]=series.time.map(t=>interpolatePointField(source.hourly,name,t));
+  const series=state.gridSeries,grid=state.iconGrid;
+  if(!series||!grid)return false;
+  const current=state.forecasts.icon_d2;
+  // The source is ONLY a genuine Open-Meteo ICON point forecast.
+  // Never interpolate from a previous grid-only fallback as if it were wind.
+  const point=current?.fromRawGrid?current.rawPointForecast:(current||null);
+  const combined=composeIconD2Forecast(series,point);
+  state.forecasts.icon_d2=combined;
+  state.modelErrors.icon_d2=combined.gridOnly?
+    'Wind/ancillary values awaiting point API':undefined;
+  if(state.model==='icon_d2'){
+    state.forecast=combined;
+    showMessage(combined.gridOnly?
+      'DWD ICON-D2 temperature, rain and clouds ready; loading wind from the point API…':'');
   }
-  state.forecasts.icon_d2={...source,hourly,rawPointForecast:source,fromRawGrid:true,
-    fetchedAt:source.fetchedAt||Date.now()};
-  if(state.model==='icon_d2')state.forecast=state.forecasts.icon_d2;
+  return true;
 }
 async function loadNativePointSeries(){
   const grid=state.iconGrid,place={...state.place},epoch=++pointSeriesEpoch;

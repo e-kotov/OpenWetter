@@ -89,11 +89,27 @@ BOOTSTRAP = r'''async (app64) => {
     if(url.includes('/v1/dwd-icon')){
       const model=new URL(url).searchParams.get('models');
       counters.forecast[model]=(counters.forecast[model]||0)+1;
+      if(window.__mockD2OfflinePoint&&model==='icon_d2')
+        throw new DOMException('signal is aborted without reason','AbortError');
       body=forecast(url);
     }else if(url.includes('geocoding-api.open-meteo.com')){
       counters.geocode++;body={results:[{latitude:50.7374,longitude:7.0982,name:'Bonn',country:'Germany'}]};
     }else if(url.includes('/icon-data/manifest.json')){
-       return new Response('Test offline ICON dataset',{status:404});
+       if(!window.__mockD2OfflinePoint)return new Response('Test offline ICON dataset',{status:404});
+       body={schema:2,provider:'DWD',model:'ICON-D2',run:'2026-10-25T09:00',
+         bbox:[4,47,16,56],width:80,height:80,start:now,end:now+48*3600,
+         precipitation:{count:193,interval_minutes:15,path:'frames/precip/{index:03d}.bin.gz'},
+         cloud:{count:49,interval_minutes:60,path:'frames/cloud/{index:03d}.bin.gz'},
+         temp:{count:49,interval_minutes:60,path:'frames/temp/{index:03d}.bin.gz'},
+         point_series:{size:80,tiles_x:1,tiles_y:1,path:'series/{x:02d}/{y:02d}.bin.gz'}};
+     }else if(url.includes('/icon-data/series/')){
+       const n=80*80,q=193,h=49;
+       const bytes=new ArrayBuffer(n*(q*2+h+h*2));
+       new Uint16Array(bytes,0,q*n).fill(20);
+       new Uint8Array(bytes,q*n*2,h*n).fill(60);
+       new Uint16Array(bytes,q*n*2+h*n,h*n).fill(11100);
+       const gz=new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+       return new Response(gz,{status:200,headers:{'Content-Type':'application/octet-stream'}});
      }else if(url.includes('/radar-data/manifest.json')){
        counters.radar++;const t=Math.floor(Date.now()/300000)*300;
        body={schema:1,provider:'DWD',product:'RADOLAN-RY',bbox:[4,47,16,56],width:64,height:48,
@@ -385,11 +401,49 @@ def ui(kind,viewport,browser):
     page.close()
 
 
+def verify_grids_survive_point_api_abort(browser):
+    page=browser.new_page(viewport={'width':390,'height':844},device_scale_factor=1,has_touch=True,is_mobile=True)
+    errors=[]
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.set_content(HTML,wait_until='load')
+    page.evaluate('window.__mockD2OfflinePoint=true')
+    page.evaluate(BOOTSTRAP,APP_B64)
+    page.wait_for_function('''()=>{
+      const f=openwetterTest?.state?.forecasts?.icon_d2;
+      return f?.fromRawGrid===true&&f?.gridOnly===true&&f?.hourly?.time?.length===193;
+    }''')
+    assert 'signal is aborted' not in page.locator('#message').inner_text().lower()
+    assert 'ready' in page.locator('#message').inner_text().lower()
+    assert page.locator('#graphStack .plot-row').count()==4
+    assert page.locator('#heroTemp').inner_text()=='11°'
+    assert page.locator('#quickCloud').inner_text()=='60%'
+    assert page.locator('#quickRain').inner_text()=='0.2 mm'
+    assert page.locator('#quickWind').inner_text()=='— km/h'
+    assert page.evaluate('openwetterTest.state.forecasts.icon_d2.hourly.cloud_cover[10]')==60
+    assert page.evaluate('openwetterTest.state.forecasts.icon_d2.hourly.temperature_2m[10]')==11
+    # Restore the point API; it must enrich the same grid graphs with wind,
+    # not replace their genuine DWD-derived rain/cloud/temperature.
+    page.evaluate('window.__mockD2OfflinePoint=false')
+    page.evaluate('openwetterTest.selectModel("icon_d2")')
+    page.wait_for_function('''()=>{
+      const f=openwetterTest.state.forecasts.icon_d2;
+      return f?.fromRawGrid===true&&f?.gridOnly===false&&
+        f.hourly.wind_speed_10m.some(v=>typeof v==='number'&&v>0);
+    }''')
+    assert page.locator('#heroTemp').inner_text()=='11°'
+    assert page.locator('#quickCloud').inner_text()=='60%'
+    assert page.locator('#quickWind').inner_text()!='— km/h'
+    assert not errors,errors
+    print('D2 point API abort and grid-only forecast recovery: OK')
+    page.close()
+
+
 def main():
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or p.chromium.executable_path,args=['--no-sandbox','--disable-dev-shm-usage'])
         ui('mobile',{'width':390,'height':844},browser)
         ui('desktop',{'width':1440,'height':900},browser)
+        verify_grids_survive_point_api_abort(browser)
         browser.close()
 
 if __name__=='__main__':main()

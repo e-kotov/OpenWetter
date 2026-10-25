@@ -11,6 +11,7 @@ const MAX_ICON_FRAMES=7;
 const MAX_RADAR_FRAMES=8;
 const caches={icon:new Map(),radar:new Map()};
 const pending=new Map();
+const pendingCompressed=new Map();
 const canvasCache=new WeakMap();
 
 export function parseNativeManifest(data,kind){
@@ -66,7 +67,7 @@ async function decompressGzip(bytes){
   if(!body)throw new Error('Compressed raster stream unavailable');
   return new Response(body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
-export async function compressedFrame(url,kind,expectedRawLength){
+async function fetchCompressedFrame(url,kind,expectedRawLength){
   const stored=await weatherDiskCache.get(kind,url);
   if(stored){
     try{
@@ -86,6 +87,19 @@ export async function compressedFrame(url,kind,expectedRawLength){
   // If storage is denied or full, the small decoded-RAM LRU still works.
   await weatherDiskCache.put(kind,url,compressed);
   return raw;
+}
+/** Share in-flight compressed downloads between the point-series graph
+ * and spatial map tile for the same DWD URL. CacheStorage alone cannot dedupe
+ * two concurrent misses on a cold start.
+ */
+export async function compressedFrame(url,kind,expectedRawLength){
+  if(!pendingCompressed.has(url)){
+    pendingCompressed.set(url,fetchCompressedFrame(url,kind,expectedRawLength)
+      .finally(()=>pendingCompressed.delete(url)));
+  }
+  const bytes=await pendingCompressed.get(url);
+  if(bytes.byteLength!==expectedRawLength)throw new Error('Unexpected DWD field dimensions');
+  return bytes;
 }
 /** Synchronous LRU lookup so scrubbing can display a cached frame immediately. */
 export function peekNativeFrame(manifest,field,timestamp){
