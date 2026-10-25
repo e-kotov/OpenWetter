@@ -12,7 +12,7 @@ function fakeStorage(){
         const responses=new Map();
         databases.set(name,{
           async put(url,response){responses.set(String(url),response.clone());},
-          async match(url){return responses.get(String(url))?.clone();},
+          async match(url){return responses.get(String(url.url||url))?.clone();},
           async keys(){return [...responses.keys()].map(url=>new Request(url));},
           async delete(url){return responses.delete(String(url.url||url));}
         });
