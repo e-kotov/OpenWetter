@@ -1003,7 +1003,7 @@ function wireMapGestures(){
     dom.map.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
     if(pointers.size===1)drag={startX:event.clientX,startY:event.clientY,lastX:event.clientX,lastY:event.clientY,
-      startTime:state.mode==='radar'?getRadarTime():state.selectedTime,axis:null,wasMulti:false,mouse:event.pointerType==='mouse'};
+      startTime:state.mode==='radar'?getRadarTime():state.selectedTime,startContinuousIndex:state.mode==='continuous'?continuousCursorIndex(combinedFrames(),state.continuousCursor):null,axis:null,wasMulti:false,mouse:event.pointerType==='mouse'};
     else if(pointers.size===2){
       const [a,b]=[...pointers.values()];drag={wasMulti:true,midX:(a.x+b.x)/2,midY:(a.y+b.y)/2,dist:Math.hypot(a.x-b.x,a.y-b.y)};
     }
