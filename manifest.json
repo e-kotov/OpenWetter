@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "provider": "DWD",
+  "product": "RADOLAN-RY",
+  "unit": "mm/h",
+  "resolution_note": "Native 1 km polar-stereographic RADOLAN RY sampled to 0.005-degree display pixels",
+  "native_grid_metres": 1000,
+  "display_degrees": 0.005,
+  "bbox": [
+    4.0,
+    47.0,
+    16.0,
+    56.0
+  ],
+  "width": 2401,
+  "height": 1801,
+  "encoding": "uint16-le",
+  "gain": 0.01,
+  "nodata": 65535,
+  "generated_at": "2026-10-25T09:11:06.571104+00:00",
+  "latest_age_seconds": 293,
+  "frames": [
+    {
+      "time": 1792912200,
+      "file": "frames/1792912200.bin.gz"
+    },
+    {
+      "time": 1792912500,
+      "file": "frames/1792912500.bin.gz"
+    },
+    {
+      "time": 1792912800,
+      "file": "frames/1792912800.bin.gz"
+    },
+    {
+      "time": 1792913100,
+      "file": "frames/1792913100.bin.gz"
+    },
+    {
+      "time": 1792913400,
+      "file": "frames/1792913400.bin.gz"
+    },
+    {
+      "time": 1792913700,
+      "file": "frames/1792913700.bin.gz"
+    },
+    {
+      "time": 1792914000,
+      "file": "frames/1792914000.bin.gz"
+    },
+    {
+      "time": 1792914300,
+      "file": "frames/1792914300.bin.gz"
+    },
+    {
+      "time": 1792914600,
+      "file": "frames/1792914600.bin.gz"
+    },
+    {
+      "time": 1792914900,
+      "file": "frames/1792914900.bin.gz"
+    },
+    {
+      "time": 1792915200,
+      "file": "frames/1792915200.bin.gz"
+    },
+    {
+      "time": 1792915500,
+      "file": "frames/1792915500.bin.gz"
+    },
+    {
+      "time": 1792915800,
+      "file": "frames/1792915800.bin.gz"
+    },
+    {
+      "time": 1792916100,
+      "file": "frames/1792916100.bin.gz"
+    },
+    {
+      "time": 1792916400,
+      "file": "frames/1792916400.bin.gz"
+    },
+    {
+      "time": 1792916700,
+      "file": "frames/1792916700.bin.gz"
+    },
+    {
+      "time": 1792917000,
+      "file": "frames/1792917000.bin.gz"
+    },
+    {
+      "time": 1792917300,
+      "file": "frames/1792917300.bin.gz"
+    },
+    {
+      "time": 1792917600,
+      "file": "frames/1792917600.bin.gz"
+    },
+    {
+      "time": 1792917900,
+      "file": "frames/1792917900.bin.gz"
+    },
+    {
+      "time": 1792918200,
+      "file": "frames/1792918200.bin.gz"
+    },
+    {
+      "time": 1792918500,
+      "file": "frames/1792918500.bin.gz"
+    },
+    {
+      "time": 1792918800,
+      "file": "frames/1792918800.bin.gz"
+    },
+    {
+      "time": 1792919100,
+      "file": "frames/1792919100.bin.gz"
+    }
+  ]
+}
