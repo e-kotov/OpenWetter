@@ -34,7 +34,13 @@ export async function fetchNativeManifest(kind,{signal}={}){
   if(!response.ok)throw new Error(kind.toUpperCase()+' dataset HTTP '+response.status);
   const manifest=parseNativeManifest(await response.json(),kind);
   if(kind==='icon' && manifest.end < Date.now()/1000-900)throw new Error('DWD ICON-D2 data expired');
-  if(kind==='radar' && manifest.frames.at(-1).time < Date.now()/1000-3600)throw new Error('DWD radar feed is more than one hour old');
+  // Historical scans remain usable even when GitHub's scheduled publisher is delayed.
+  // Freshness is reported separately; never represent an old scan as live radar.
+  if(kind==='radar'){
+    const latest=manifest.frames.at(-1).time;
+    manifest.observationAgeSeconds=Math.max(0,Date.now()/1000-latest);
+    manifest.isStale=manifest.observationAgeSeconds>3600;
+  }
   return manifest;
 }
 export function findRasterFile(manifest,field,timestamp){
