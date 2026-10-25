@@ -931,7 +931,7 @@ function drawGraphs(){
         if(!dataset.length)return;
         if(VARIABLES[variable].chart==='bar'){
           const barWidth=Math.max(1.5,Math.min(13,w*3600/(max-min)*.8));
-          ctx.fillStyle=color;ctx.globalAlpha=opacity*(historical?.46:1);
+          ctx.fillStyle=color;ctx.globalAlpha=opacity*(historical ? 0.46 : 1);
           for(const {t,v}of dataset)if(Number.isFinite(v)&&v>0){
             const xx=x(t);ctx.fillRect(xx-barWidth/2,scale(v),barWidth,Math.max(1,scale(0)-scale(v)));
           }
@@ -946,9 +946,9 @@ function drawGraphs(){
           }
           if(fill&&firstX!==null&&lastX!==null){
             ctx.lineTo(lastX,plotH);ctx.lineTo(firstX,plotH);ctx.closePath();
-            ctx.fillStyle=color;ctx.globalAlpha=.13*opacity*(historical?.6:1);ctx.fill();
+            ctx.fillStyle=color;ctx.globalAlpha=.13*opacity*(historical ? 0.6 : 1);ctx.fill();
           }
-          ctx.strokeStyle=color;ctx.globalAlpha=opacity*(historical?.65:1);
+          ctx.strokeStyle=color;ctx.globalAlpha=opacity*(historical ? 0.65 : 1);
           ctx.lineWidth=lineWidth;ctx.lineJoin='round';
           ctx.setLineDash(historical?[4,3]:[]);ctx.stroke();ctx.setLineDash([]);
         }
