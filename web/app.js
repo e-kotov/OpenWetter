@@ -561,6 +561,7 @@ function requestRadarFrame(manifest,time){
         radarFrameShown={...frame,manifest};
         state.displayedRadarTime=frame.time;
         radarCanvasPaintKey='';
+        updateOverlayUI(); // actual timestamp updates atomically with data arrival
         requestMap();
         prefetchRadarNearby(manifest,frame.index);
       })
