@@ -1,24 +1,44 @@
-# OpenWetter v0.1.0-beta.4 — smooth real-frame weather animation
+# OpenWetter v0.1.0-beta.5 — continuous radar-to-forecast playback
 
-Android 8.0+ · Permanently signed with the **same OpenWetter signing certificate as beta.1–beta.3**, so this release should install over beta.3 without uninstalling.
+Android 8.0+ · Signed with the same persistent OpenWetter release certificate
+as beta.1–beta.4, allowing an in-place upgrade.
 
-## New: subtle seamless rain/cloud transitions
+## New: observation-to-model weather animation
 
-- Weather frames now use a **260 ms visual crossfade** instead of abruptly swapping the whole precipitation image.
-- **Observed DWD RADOLAN-RY radar** transitions between genuine **five-minute** scans, covering up to six hours of history.
-- **DWD ICON-D2** precipitation and cloud imagery transitions between the real **15-minute precipitation** and hourly cloud fields. Each geographic chunk still carries the original 48-hour model run.
-- **ICON-EU** hourly precipitation WMS map tiles use the same transition once all tiles for the next hour have arrived.
-- The old weather frame remains visible while new data load; blending begins only when the new frame is ready.
-- Rapid scrubbing may interrupt an earlier fade; the current visible blend is captured as the starting image to reduce flicker.
-- Panning, zooming, resizing, changing models, or toggling map layers does **not** animate the old geographic or model scene.
-- New **Settings → Smooth weather frame transitions (260 ms)** checkbox (on by default), persisted on device; Android **Reduced Motion** is respected.
+- New **▶ Radar → forecast** map mode joins the actual DWD RADOLAN-RY radar
+  history to ICON forecast steps in one chronological playback and scrubber.
+- **Crossfades across the radar/forecast boundary** only after the incoming
+  weather rendering finishes. An outgoing snapshot stays visible while data
+  download and rendering are in progress.
+- Existing dedicated Radar and Forecast modes remain available, with their
+  original playback controls.
+- Source and timestamp labelling clearly distinguishes observations from
+  predictions. No intermediate meteorological values, invented radar scans,
+  or simulated rainfall motion are generated.
+- Native DWD radar manifest staleness no longer hides valid older observations:
+  original timestamps remain available and the map marks delayed data as
+  **STALE RADAR**.
+- Reduced-motion and the existing Smooth weather transitions setting are
+  still respected.
 
-## Scientific accuracy
+## Six-hour radar history versus DWD retention
 
-The fade is a **visual display transition only**. No synthetic radar scan, new forecast time step, optical-flow movement, or intermediate precipitation value is generated. Every frame retains its original DWD timestamp, and the displayed point graphs still use native-derived DWD values and separately labelled wind data.
+OpenWetter publishes up to 73 five-minute radar frames, spanning six hours.
+The upstream public DWD RY directory actually retains a longer recent archive.
+The application's six-hour cap is intentional for storage and download costs,
+not an upstream DWD limitation.
 
 ## Verification and limitations
 
-GitHub Actions verifies JavaScript tests, mocked Chromium mobile/desktop interaction and Android build. This release fixes a canvas compositor regression discovered during those browser tests. Physical Android performance on the user's device remains to be checked; slow connections can still delay uncached frames, but should not create an empty weather map.
+GitHub CI verified the new timeline unit tests, browser playback and crossfade
+behavior, plus Android compilation. Tests include missing radar frames, the
+model-source boundary, and the reduced-animation setting. Native-device
+performance still needs observation on actual hardware.
 
-This remains a GitHub-distributed prerelease, and Google Play Protect may still suggest a scan.
+GitHub Actions scheduling may be delayed, so the publisher can lag behind DWD.
+This release prevents publication delays from disabling historical radar but
+does not guarantee five-minute live updates. A future direct WMS fallback or
+external heartbeat would make live radar more robust.
+
+This is an experimental GitHub-distributed prerelease; Android Play Protect
+may prompt for a security scan.
