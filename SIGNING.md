@@ -26,7 +26,7 @@ Never delete and regenerate the signing identity simply to produce a new APK. Pe
 
 ## Publish permanently signed APKs
 
-Once provisioned, open [Build independently signed Android APK](https://github.com/e-kotov/OpenWetter/actions/workflows/signed-release.yml), click **Run workflow** on **main**, choose a new version such as `v0.1.0-beta.1`, and keep **prerelease** enabled while testing.
+Once provisioned, open [Build independently signed Android APK](https://github.com/e-kotov/OpenWetter/actions/workflows/signed-release.yml), click **Run workflow** on **main**, choose a new version such as `v0.1.0-beta.2`, and keep **prerelease** enabled while testing.
 
 That workflow builds the unsigned Android release APK, decrypts your provisioned key only on the Actions runner, signs with Android `apksigner`, verifies the APK signature against the public certificate, and attaches the signed APK and SHA-256 checksum to a GitHub Release.
 

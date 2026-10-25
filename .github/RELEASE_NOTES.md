@@ -1,20 +1,21 @@
-# OpenWetter v0.1.0-alpha.6 — persistent weather cache
+# OpenWetter v0.1.0-beta.1 — signed high-detail weather maps
 
-Early, debug-signed Android build for Android 8.0+.
+First preview signed with the new **persistent OpenWetter release certificate** (not the temporary GitHub Actions debug key). Android 8.0+.
 
-## Fixes: fewer mobile-data transfers during scrubbing
+## What changed
 
-- Weather frames are kept as their original compressed DWD data in Android WebView CacheStorage, surviving app restarts where Android permits storage. They are also retained in a separate bounded decoded-RAM cache.
-- The full 24-frame DWD RADOLAN RY radar history can be cached locally (~13.7 MB compressed); a new observation no longer changes the URLs of existing frames.
-- ICON-D2 rainfall and cloud forecast maps can be explicitly preloaded (~125 MB compressed for 193 precipitation and 49 cloud frames). Individual downloaded frames are retained automatically, so previously viewed forecast times don't require another network transfer.
-- Settings provides two progress-reporting, cancellable cache-preload controls. Downloads are user initiated to avoid unexpected large mobile-data usage.
-- Model point-series tiles use persistent compressed caching too, avoiding repeated downloads for multiple nearby selected locations.
-- Radar frame visual continuity, visible-viewport rendering and bounded nearby-frame prefetch from alpha.5 are retained.
+- **ICON-D2 high-resolution regional forecast tiles:** Each visible approximately 1° area loads its complete 48-hour time series from the same genuine DWD GRIB2 source. This lets you scrub through 193 quarter-hour precipitation frames and 49 hourly cloud forecasts without repeated full-country downloads once the viewport tiles are cached.
+- **ICON-EU lightweight official WMS precipitation:** Selecting ICON-EU now renders hourly 1-hour accumulated rain from DWD's `dwd:Icon-eu_reg00625_fd_sl_TOTPREC01H` layer. Only needed 256-pixel map tiles are downloaded. It is intentionally labelled **ICON-EU (~7 km)**, not the native-detail D2 model.
+- ICON-EU WMS imagery is cached on disk; ICON-D2 bundles use the existing compressed browser/Android cache. Persistent storage is subject to device space and eviction.
+- ICON-D2 rain/cloud forecasts and selected-location graphs remain derived from the same genuine DWD data grids. ICON-EU graphs continue to use the separately-labelled Open-Meteo ICON-EU point data.
+- Existing DWD 1 km/5-minute observed radar, radar caching and scrub continuity are retained.
 
-## Limitations
+## Installation and testing
 
-The first visit to a frame still requires network unless it has been preloaded, and saved compressed data must still be decompressed when evicted from RAM. CacheStorage can be unavailable or cleared by Android when storage is constrained. DWD radar publication requires its separate data workflow; this app cannot fabricate observations when the feed is stale.
+**Important: Before installing this first permanently signed APK, uninstall the old alpha.6 debug-signed preview once.** Android cannot update a debug-signed app with an APK signed by the new release certificate. Afterward, future APKs signed with this same key and a higher version code can install as normal updates.
 
-Tests cover CacheStorage persistence, cache eviction, historical radar URL stability, network fetch deduplication, mocked Android-sized browser scrubbing, and Android compilation. **Real phone performance and storage persistence remain unverified.**
+The GitHub Actions workflow verifies the release signature and publishes SHA-256 checksums. Browser and Android-build tests pass; live performance on a physical Android phone is still unverified.
 
-This is a temporary-key debug APK, not yet signed with the permanent signing identity. See [SIGNING.md](../../blob/main/SIGNING.md). APK signing does not bypass Google Play Protect scans.
+Permanent signing provides consistent update identity but **does not bypass Google Play Protect sideloading checks**. This build uses a separately encrypted private signing key and the GitHub Actions secret; neither is attached to the release.
+
+Cloud-cover maps are high-detail ICON-D2 only because an equivalent official WMS cloud layer for ICON-EU was not verified. DWD's WMS may occasionally be delayed or rate-limited, and the EU hourly layer is only rendered at published valid forecast hours.

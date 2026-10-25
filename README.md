@@ -15,7 +15,7 @@ Experimental Android and browser weather application. Real **Deutscher Wetterdie
 
 ## Installation
 
-The GitHub [Releases](https://github.com/e-kotov/OpenWetter/releases) page contains experimental debug APKs. They are not guaranteed to update over one another because GitHub-hosted debug keys change. The debug build is compiled and smoke-tested by GitHub Actions, **not yet verified on a physical Android device with a live internet connection**.
+The GitHub [Releases](https://github.com/e-kotov/OpenWetter/releases) page contains experimental APKs, including release-key-signed beta versions. Old alpha debug APKs are not compatible with the permanent beta signing certificate; uninstall once before installing a signed beta. Subsequent beta releases will reuse the same certificate. The debug build is compiled and smoke-tested by GitHub Actions, **not yet verified on a physical Android device with a live internet connection**.
 
 To run the PWA locally:
 
@@ -81,3 +81,7 @@ In Settings, **Cache 2 h radar history (~14 MB)** preloads the 24 radar observat
 **Alternative when selecting ICON-EU:** OpenWetter requests hourly accumulated precipitation through the official DWD WMS layer `dwd:Icon-eu_reg00625_fd_sl_TOTPREC01H`. The GeoServer renders only visible 256-pixel map tiles; fetched PNGs are retained in disk and memory caches. This model's native resolution is approximately **6.5–7 km**, not ICON-D2. A separate ICON-EU WMS cloud-cover layer was not available in the tested DWD catalogue, so **cloud map overlays remain ICON-D2 only**; the ICON-EU cloud graph still uses its labelled Open-Meteo ICON-EU point API. WMS precipitation coverage is limited to the currently published valid hours, and some server responses may be empty in dry regions or unavailable during outages. DWD service calls are subject to DWD attribution and availability terms.
 
 Switch models using the existing top model selector to compare native D2 spatial data and the lightweight EU precipitation WMS. Both remain clearly labelled. No separate non-DWD or fake model overlay is inserted.
+
+## Signing rollout
+
+The beta.1 prerelease is built using the **permanent private signing key** provisioned by GitHub Actions and stored encrypted in this repository. Android will accept later higher-version release builds signed by the same certificate as in-place updates. The existing alpha.6 debug build has a different signing identity, so it requires a one-time uninstall before the first beta installation. Google Play Protect may still offer scans for GitHub-installed APKs.

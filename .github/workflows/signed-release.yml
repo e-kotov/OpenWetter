@@ -1,5 +1,7 @@
 name: Build independently signed Android APK
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -15,7 +17,7 @@ permissions:
   contents: read
 jobs:
   signed-release:
-    if: github.repository == 'e-kotov/OpenWetter' && github.ref == 'refs/heads/main'
+    if: ${{ github.repository == 'e-kotov/OpenWetter' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Publish OpenWetter v0.1.0-beta.1 signed prerelease') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,11 +47,11 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.1' }}
           OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
       - name: Stamp chosen version into this build (without changing Git history)
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.1' }}
         run: |
           python - <<'PYCODE'
           import os,re,pathlib
@@ -77,7 +79,7 @@ jobs:
         run: gradle -p android :app:assembleRelease --stacktrace
       - name: Decrypt and sign with the persistent private certificate
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.1' }}
           OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
         shell: bash
         run: |
@@ -109,8 +111,8 @@ jobs:
       - name: Publish signed GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.1' }}
+          PRERELEASE: ${{ github.event_name == 'push' || inputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -119,5 +121,5 @@ jobs:
           gh release create "$RELEASE_TAG" \
             "dist/OpenWetter-${RELEASE_TAG}.apk" dist/SHA256SUMS.txt \
             --target "$GITHUB_SHA" --title "OpenWetter $RELEASE_TAG" \
-            --notes 'Independently release-key-signed Android APK. Keep the signing certificate for future updates. This does not bypass Google Play Protect checks for sideloaded apps.' \
+            --notes-file .github/RELEASE_NOTES.md \
             "${extra[@]}"
