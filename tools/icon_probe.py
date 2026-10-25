@@ -55,8 +55,10 @@ def probe(variable):
     if chosen.endswith('.bz2'):
         import bz2
         payload=bz2.decompress(payload)
-    from io import BytesIO
-    f=BytesIO(payload)
+    import tempfile
+    f=tempfile.TemporaryFile()
+    f.write(payload)
+    f.seek(0)
     h=ec.codes_grib_new_from_file(f)
     if h is None:raise RuntimeError('GRIB decode returned no fields')
     try:
