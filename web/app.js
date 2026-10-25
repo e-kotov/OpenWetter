@@ -197,7 +197,7 @@ function setHorizon(hours){
 }
 function setSelectedTime(time){
   const {min,max}=timeBounds();
-  const next=clamp(Math.round(time/3600)*3600,min,max);
+  const step=timelineStep();const next=clamp(Math.round(time/step)*step,min,max);
   if(next===state.selectedTime)return;
   state.selectedTime=next;state.forecastIndex=state.forecast?nearestIndex(state.forecast.hourly.time,next):0;
   updateReadouts();updateTimeUI();requestCursor();requestMap();
@@ -230,17 +230,18 @@ function updateOverlayUI(){
   dom.toggleForecastClouds.setAttribute('aria-pressed',String(state.showForecastClouds));
   dom.toggleForecastRain.disabled=state.model!=='icon_d2';
   dom.toggleForecastClouds.disabled=state.model!=='icon_d2';
-  dom.radarTiles.style.display=visibleRain?'block':'none';
+  dom.radarCanvas.hidden=!visibleRain;
+  dom.radarTiles.style.display='none';
   dom.cloudTiles.hidden=!state.showClouds;
   const observations=[];
   if(visibleRain)observations.push('rain radar');
   if(state.showClouds)observations.push('satellite clouds');
-  dom.mapLayerName.textContent=state.mode==='radar'?'Rain radar · observed':
+  dom.mapLayerName.textContent=state.mode==='radar'?'DWD 1 km radar · observed':
     (realGrid?'ICON-D2 forecast · spatial grid':(observations.length?`Observed: ${observations.join(' + ')}`:'ICON forecast grid unavailable'));
-  dom.radarAttribution.textContent=(visibleRain?' · Radar © RainViewer':'')+
+  dom.radarAttribution.textContent=(visibleRain?' · Radar © DWD':'')+
     (state.showClouds?' · Satellite © DWD':'');
   dom.mapModelName.textContent=state.mode==='radar'?'Radar history · independent timeline':
-    (realGrid?`DWD run ${state.iconGrid.run} · 0.05° map`:(observations.length?'Observations do not follow ICON time':state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`));
+    (realGrid?`DWD ICON ${state.iconGrid.run} · 0.0125° display raster`:(observations.length?'Observations do not follow ICON time':state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`));
 }
 function toggleObservation(which){
   if(which==='rain'){
@@ -319,245 +320,8 @@ async function paintNativeGrid(){
     if(rain)paintNativeField(ctx,model,rain.data,'precip',width,height,map.zoom,map,.87);
     if(state.showForecastRain)for(const dt of [-900,900])void downloadNativeFrame(model,'precip',time+dt).catch(()=>{});
   }
-  if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
-    const frameTime=state.radar.frames[state.radarIndex]?.time;
-    try{
-      const observed=await downloadNativeFrame(state.radar,'radar',frameTime);
-      if(generation!==drawEpoch)return;
-      if(observed)paintNativeField(radar.getContext('2d'),state.radar,observed.data,'radar',
-        width,height,map.zoom,map,1);
-    }catch(error){if(generation===drawEpoch)showMessage('DWD radar frame: '+error.message,true);}
-  }
-}
-function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}
-function play(){
-  if(state.playing){stopPlay();return;}
-  if(state.mode==='radar'&&!timeList().length)return;
-  state.playing=true;dom.playBtn.textContent='Ⅱ';dom.playBtn.setAttribute('aria-label','Pause weather timeline');
-  playTimer=setInterval(()=>{
-    if(state.mode==='radar'){
-      if(state.radarIndex>=timeList().length-1){stopPlay();return;}
-      setRadarIndex(state.radarIndex+1);
-    }else{
-      if(state.selectedTime>=timeBounds().max){stopPlay();return;}
-      setSelectedTime(state.selectedTime+3600);
-    }
-  },state.mode==='radar'?1700:350);
-}
-function updateTimeUI(){
-  if(state.mode==='radar'){
-    const times=timeList();const has=times.length>0;
-    dom.timeSlider.min='0';dom.timeSlider.max=String(Math.max(times.length-1,1));dom.timeSlider.value=String(state.radarIndex);
-    dom.timeSlider.disabled=!has;
-    dom.timeLabel.textContent=has?formatTime(getRadarTime()):'Loading radar…';
-    dom.startLabel.textContent=has?formatTime(times[0]):'—';
-    dom.endLabel.textContent=has?formatTime(times.at(-1)):'—';
-    dom.timeRange.textContent='RADAR · OBSERVED HISTORY (NOT FORECAST)';
-  }else{
-    dom.timeSlider.min='0';dom.timeSlider.max=String(state.horizon);
-    dom.timeSlider.value=String(Math.round((state.selectedTime-state.anchor)/3600));dom.timeSlider.disabled=false;
-    dom.timeLabel.textContent=formatTime(state.selectedTime);
-    dom.startLabel.textContent=formatTime(state.anchor,{weekday:'short',hour:'2-digit'});
-    dom.endLabel.textContent=formatTime(timeBounds().max,{weekday:'short',hour:'2-digit'});
-    dom.timeRange.textContent=`DWD ICON · ${state.horizon===48?'48 h':'5 days'}`;
-  }
-}
-function updateReadouts(){
-  const f=state.forecasts[state.model]||null;
-  state.forecast=f;
-  state.forecastIndex=f?nearestIndex(f.hourly.time,state.selectedTime):0;
-  const temp=metricValue(state.model,'temperature');
-  dom.heroTemp.textContent=temp==null?'—°':`${fmt(temp,'temperature')}°`;
-  dom.heroTime.textContent=formatTime(state.selectedTime);
-  dom.quickRain.textContent=`${fmt(metricValue(state.model,'precipitation'),'precipitation')} mm`;
-  dom.quickWind.textContent=`${fmt(metricValue(state.model,'wind'),'wind')} km/h`;
-  dom.quickCloud.textContent=`${fmt(metricValue(state.model,'cloud'),'cloud')}%`;
-  dom.pinTemp.textContent=temp==null?'—':`${fmt(temp,'temperature')}°`;
-  updateOverlayUI();
-  for(const row of dom.graphStack.querySelectorAll('[data-model][data-metric]')){
-    const output=row.querySelector('.plot-value');if(!output)continue;
-    const metric=row.dataset.metric, model=row.dataset.model;
-    const v=metricValue(model,metric);
-    output.textContent=v==null?'—':`${fmt(v,metric)} ${VARIABLES[metric].unit}`;
-  }
-  for(const row of dom.graphStack.querySelectorAll('[data-compare-values]')){
-    const model=row.dataset.compareValues;
-    const val=metricValue(model,'temperature'),rain=metricValue(model,'precipitation'),cloud=metricValue(model,'cloud');
-    row.textContent=[`${fmt(val,'temperature')}°C`,`${fmt(rain,'precipitation')} mm`,`${fmt(cloud,'cloud')}%`].join(' · ');
-  }
-}
-function refreshView(){
-  dom.locationName.textContent=state.place.name;
-  dom.headerPlace.textContent=shortPlace(state.place.name);
-  dom.modelDescription.textContent=`${MODELS[state.model].label} · ${MODELS[state.model].subtitle}`+
-    (state.forecasts[state.model]?.fromRawGrid?' · rain/cloud/temp from gridded DWD':'');
-  dom.modelSelect.value=state.model;
-  dom.horizon48.classList.toggle('active',state.horizon===48);
-  dom.horizon120.classList.toggle('active',state.horizon===120);
-  dom.horizon48.setAttribute('aria-pressed',String(state.horizon===48));
-  dom.horizon120.setAttribute('aria-pressed',String(state.horizon===120));
-  renderGraphs();updateReadouts();updateTimeUI();requestGraphs();requestMap();
-}
-
-function createPlotBody(model,metric){
-  const body=document.createElement('div');body.className='plot-body';
-  body.dataset.model=model;body.dataset.metric=metric;
-  const canvas=document.createElement('canvas');canvas.setAttribute('aria-label',`${MODELS[model].label} ${metric==='composite'?'precipitation, temperature, and clouds':VARIABLES[metric].name} graph`);
-  const line=document.createElement('div');line.className='plot-cursor';line.setAttribute('aria-hidden','true');
-  body.append(canvas,line);
-  return body;
-}
-function renderGraphs(){
-  dom.graphStack.replaceChildren();
-  if(state.view==='compare'){
-    for(const model of MODEL_IDS){
-      const outer=document.createElement('article');outer.className='compare-row';outer.dataset.comparison=model;
-      const heading=document.createElement('div');heading.className='compare-head';
-      const name=document.createElement('strong');name.textContent=`DWD ${MODELS[model].label}`;
-      const summary=document.createElement('span');summary.className='compare-values';summary.dataset.compareValues=model;
-      heading.append(name,summary);
-      const plot=createPlotBody(model,'composite');
-      const key=document.createElement('div');key.className='compare-key';key.innerHTML='<span class="key-rain">▰ Rain</span><span class="key-temp">━ Temperature</span><span class="key-cloud">▧ Clouds</span>';
-      outer.append(heading,plot,key);
-      if(state.modelErrors[model]){const error=document.createElement('div');error.className='plot-no-data';error.textContent=state.modelErrors[model];plot.append(error);}
-      else if(!state.forecasts[model]){const busy=document.createElement('div');busy.className='plot-no-data';busy.textContent='Loading model forecast…';plot.append(busy);}
-      dom.graphStack.append(outer);
-    }
-  }else{
-    for(const metric of ['cloud','precipitation','temperature','wind']){
-      const row=document.createElement('article');row.className='plot-row';row.dataset.model=state.model;row.dataset.metric=metric;
-      const label=document.createElement('div');label.className='plot-label';
-      const name=document.createElement('strong');name.textContent=VARIABLES[metric].name;
-      const details=document.createElement('small');details.textContent=VARIABLES[metric].unit;
-      label.append(name,details);
-      const val=document.createElement('span');val.className='plot-value';
-      const plot=createPlotBody(state.model,metric);
-      row.append(label,plot,val);dom.graphStack.append(row);
-    }
-  }
-  requestCursor();requestGraphs();
-}
-function plotAreaData(f,metric,min,max){
-  if(!f)return [];
-  const key=VARIABLES[metric].key;
-  return f.hourly.time.map((t,i)=>({t,v:f.hourly[key][i]})).filter(({t})=>t>=min&&t<=max);
-}
-function drawGraphs(){
-  for(const body of dom.graphStack.querySelectorAll('.plot-body')){
-    const canvas=body.querySelector('canvas'),r=body.getBoundingClientRect();
-    if(r.width<12||r.height<12)continue;
-    const dpr=Math.min(window.devicePixelRatio||1,2);
-    canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);
-    const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
-    const w=r.width,h=r.height,plotH=h-15;
-    ctx.clearRect(0,0,w,h);
-    const model=body.dataset.model,metric=body.dataset.metric;
-    const f=state.forecasts[model],{min,max}=timeBounds();
-    const x=t=>timelinePosition(t,min,max)*w;
-    for(let i=0;i<=state.horizon;i+=24){
-      const x0=x(min+i*3600),x1=x(Math.min(max,min+(i+24)*3600));
-      if((i/24)%2===1){ctx.fillStyle='#1a324b';ctx.fillRect(x0,0,x1-x0,plotH);}
-    }
-    ctx.strokeStyle='#35516a';ctx.lineWidth=.65;
-    for(let j=1;j<=3;j++){const y=plotH*j/4;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
-    const tick=state.horizon===48?12:24;
-    for(let hours=0;hours<=state.horizon;hours+=tick){
-      const xx=x(min+hours*3600);
-      ctx.strokeStyle='#48637c66';ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,plotH);ctx.stroke();
-      ctx.textAlign=hours===0?'left':hours===state.horizon?'right':'center';
-      ctx.fillStyle='#a3bad3';ctx.font='10px system-ui';
-      ctx.fillText(formatTime(min+hours*3600,{weekday:'short',hour:'2-digit'}),xx,h-3);
-    }
-    if(!f)continue;
-    const plot=(variable,{opacity=1,lineWidth=1.7,fill=false}={})=>{
-      const dataset=plotAreaData(f,variable,min,max);
-      const valid=dataset.map(x=>x.v).filter(v=>typeof v==='number'&&Number.isFinite(v));
-      const {min:ymin,max:ymax}=axisLimits(valid,variable);
-      const scale=v=>plotH-3-((v-ymin)/(ymax-ymin))*(plotH-9);
-      const color=VARIABLES[variable].color;
-      if(VARIABLES[variable].chart==='bar'){
-        const barWidth=Math.max(1.5,Math.min(13,w*3600/(max-min)*.8));
-        ctx.fillStyle=color;ctx.globalAlpha=opacity;
-        for(const {t,v}of dataset)if(Number.isFinite(v)&&v>0){const xx=x(t);ctx.fillRect(xx-barWidth/2,scale(v),barWidth,Math.max(1,scale(0)-scale(v)));}
-      }else{
-        ctx.beginPath();let drawing=false,firstX=0,lastX=0;
-        for(const {t,v}of dataset){
-          if(typeof v!=='number'||!Number.isFinite(v)){drawing=false;continue;}
-          const xx=x(t),yy=scale(v);
-          if(!drawing){ctx.moveTo(xx,yy);drawing=true;if(!firstX)firstX=xx;}else ctx.lineTo(xx,yy);
-          lastX=xx;
-        }
-        if(fill&&valid.length){
-          ctx.lineTo(lastX,plotH);ctx.lineTo(firstX,plotH);ctx.closePath();ctx.fillStyle=color;ctx.globalAlpha=.13*opacity;ctx.fill();
-        }
-        ctx.strokeStyle=color;ctx.globalAlpha=opacity;ctx.lineWidth=lineWidth;ctx.lineJoin='round';ctx.stroke();
-      }
-      ctx.globalAlpha=1;
-    };
-    if(metric==='composite'){
-      plot('cloud',{opacity:.52,fill:true,lineWidth:1});
-      plot('precipitation',{opacity:.78});
-      plot('temperature',{lineWidth:2.1});
-    }else plot(metric,{fill:metric==='cloud'});
-    if(f.hourly.time.at(-1)<max-1800){
-      ctx.fillStyle='#9ebbd044';ctx.fillRect(x(f.hourly.time.at(-1))+2,0,w-x(f.hourly.time.at(-1)),plotH);
-    }
-  }
-  updateCursor();
-}
-function updateCursor(){
-  const {min,max}=timeBounds();
-  const percentage=timelinePosition(state.selectedTime,min,max)*100;
-  for(const cursor of dom.graphStack.querySelectorAll('.plot-cursor'))cursor.style.left=`${percentage}%`;
-}
-function timeFromGraphPointer(event,body){
-  if(state.mode==='radar')setMode('forecast');
-  const r=body.getBoundingClientRect();
-  stopPlay();setSelectedTime(state.anchor+Math.round(clamp((event.clientX-r.left)/r.width,0,1)*state.horizon)*3600);
-}
-function tileLayer(element,items){
-  const existing=new Map([...element.children].map(n=>[n.dataset.key,n]));const keys=new Set();
-  for(const t of items){
-    keys.add(t.key);let img=existing.get(t.key);
-    if(!img){
-      img=document.createElement('img');img.dataset.key=t.key;img.src=t.url;img.alt='';img.draggable=false;img.decoding='async';
-      img.addEventListener('error',()=>{
-        img.style.opacity=0;
-        if(element===dom.cloudTiles && state.showClouds && !cloudWarningIssued){
-          cloudWarningIssued=true;showMessage('DWD satellite image unavailable; try again later.',true);
-        }
-      });element.append(img);
-    }
-    img.style.width=`${t.size}px`;img.style.height=`${t.size}px`;
-    img.style.left=`${t.left}px`;img.style.top=`${t.top}px`;
-  }
-  for(const [key,node]of existing)if(!keys.has(key))node.remove();
-}
-function renderMap(){
-  if(state.view==='compare')return;
-  const r=dom.map.getBoundingClientRect();if(r.width<5||r.height<5)return;
-  const z=state.map.zoom,point=mercator(state.map.latitude,state.map.longitude,z),
-    topLeft={x:point.x-r.width/2,y:point.y-r.height/2},maxTile=2**z;
-  const tiles=[];
-  const minx=Math.floor(topLeft.x/256),maxx=Math.floor((topLeft.x+r.width)/256),
-    miny=Math.max(0,Math.floor(topLeft.y/256)),maxy=Math.min(maxTile-1,Math.floor((topLeft.y+r.height)/256));
-  for(let x=minx;x<=maxx;x++)for(let y=miny;y<=maxy;y++){
-    const xx=((x%maxTile)+maxTile)%maxTile;
-    tiles.push({key:`${z}/${xx}/${y}`,url:`https://tile.openstreetmap.org/${z}/${xx}/${y}.png`,size:256,left:x*256-topLeft.x,top:y*256-topLeft.y});
-  }
-  tileLayer(dom.baseTiles,tiles);
-  paintNativeGrid();
-  if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
-    const rz=Math.min(z,7),scale=2**(z-rz),tileSize=256*scale,limit=2**rz;
-    const radarTiles=[];
-    const x0=Math.floor(topLeft.x/tileSize),x1=Math.floor((topLeft.x+r.width)/tileSize),
-      y0=Math.max(0,Math.floor(topLeft.y/tileSize)),y1=Math.min(limit-1,Math.floor((topLeft.y+r.height)/tileSize));
-    for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
-      const url=radarTileURL(state.radar,state.radarIndex,rz,x,y);
-      if(url)radarTiles.push({key:`${state.radarIndex}/${rz}/${((x%limit)+limit)%limit}/${y}`,url,size:tileSize,left:x*tileSize-topLeft.x,top:y*tileSize-topLeft.y});
-    }
-    tileLayer(dom.radarTiles,radarTiles);
-  }else dom.radarTiles.replaceChildren();
+  // DWD RY rain radar now draws georeferenced 1km data on radarCanvas.
+  dom.radarTiles.replaceChildren();
   // DWD Meteosat imagery is the most recent observed scene, not a future cloud forecast.
   if(state.showClouds){
     const satZoom=Math.min(z,9),scale=2**(z-satZoom),tileSize=256*scale,limit=2**satZoom;
@@ -583,7 +347,7 @@ function pan(dx,dy){
 }
 function zoom(delta){state.map.zoom=clamp(state.map.zoom+delta,3,12);requestMap();}
 function radarSwipeTimestamp(startTime,dx,dy,axis){
-  const speeds={horizontalHours:state.horizontalHours/12,verticalHours:state.verticalHours/12,stepSeconds:600,
+  const speeds={horizontalHours:state.horizontalHours/12,verticalHours:state.verticalHours/12,stepSeconds:300,
     minSeconds:timeList()[0]??0,maxSeconds:timeList().at(-1)??0};
   return scrubTimestamp(startTime,dx,dy,axis,speeds);
 }
@@ -622,7 +386,7 @@ function wireMapGestures(){
             const bound=timeBounds();
             const t=scrubTimestamp(drag.startTime,dx,dy,drag.axis,{
               horizontalHours:state.horizontalHours,verticalHours:state.verticalHours,
-              minSeconds:bound.min,maxSeconds:bound.max,
+              minSeconds:bound.min,maxSeconds:bound.max,stepSeconds:timelineStep(),
             });
             setSelectedTime(t);
           }
@@ -652,7 +416,7 @@ function wire(){
   dom.horizon120.addEventListener('click',()=>setHorizon(120));
   dom.timeSlider.addEventListener('input',event=>{stopPlay();
     if(state.mode==='radar')setRadarIndex(Number(event.target.value));
-    else setSelectedTime(state.anchor+Number(event.target.value)*3600);
+    else setSelectedTime(timeBounds().min+Number(event.target.value)*timelineStep());
   });
   dom.playBtn.addEventListener('click',play);
   dom.modeForecast.addEventListener('click',()=>setMode('forecast'));
@@ -679,7 +443,7 @@ function wire(){
   });
   dom.opacitySlider.addEventListener('input',event=>{
     state.radarOpacity=Number(event.target.value)/100;
-    dom.radarTiles.style.opacity=String(state.radarOpacity);
+    dom.radarCanvas.style.opacity=String(state.radarOpacity);
     dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;save();
   });
   dom.graphStack.addEventListener('pointerdown',event=>{
@@ -716,8 +480,8 @@ function wire(){
   window.addEventListener('keydown',event=>{
     if(event.key==='Escape'){closeDrawer();dom.settingsPanel.hidden=true;dom.settingsBtn.setAttribute('aria-expanded','false');}
     if(event.target.matches('input,button,select,textarea'))return;
-    if(event.key==='ArrowRight'){stopPlay();state.mode==='radar'?setRadarIndex(state.radarIndex+1):setSelectedTime(state.selectedTime+3600);}
-    if(event.key==='ArrowLeft'){stopPlay();state.mode==='radar'?setRadarIndex(state.radarIndex-1):setSelectedTime(state.selectedTime-3600);}
+    if(event.key==='ArrowRight'){stopPlay();state.mode==='radar'?setRadarIndex(state.radarIndex+1):setSelectedTime(state.selectedTime+timelineStep());}
+    if(event.key==='ArrowLeft'){stopPlay();state.mode==='radar'?setRadarIndex(state.radarIndex-1):setSelectedTime(state.selectedTime-timelineStep());}
   });
   window.addEventListener('resize',()=>{requestGraphs();requestMap();});
   if('ResizeObserver' in window)new ResizeObserver(()=>{requestGraphs();requestMap();}).observe(dom.graphStack);
@@ -733,7 +497,7 @@ dom.horizontalOutput.textContent=`${state.horizontalHours} h / 100 px`;
 dom.verticalOutput.textContent=`${state.verticalHours} h / 100 px`;
 dom.opacitySlider.value=String(Math.round(state.radarOpacity*100));
 dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;
-dom.radarTiles.style.opacity=String(state.radarOpacity);
+dom.radarCanvas.style.opacity=String(state.radarOpacity);
 dom.cloudOpacitySlider.value=String(Math.round(state.cloudOpacity*100));
 dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;
 dom.cloudTiles.style.opacity=String(state.cloudOpacity);
