@@ -231,6 +231,37 @@ export function interpolatePointField(hourly,field,time){
   const frac=Math.max(0,Math.min(1,(time-hourly.time[a])/(hourly.time[b]-hourly.time[a])));
   return va+(vb-va)*frac;
 }
+/** Make native DWD point graphs available independently of the optional
+ * Open-Meteo point API. Wind and ancillary values stay null until that API
+ * answers; genuine cloud, precipitation and temperature are never overwritten.
+ */
+export function composeIconD2Forecast(series,pointForecast=null,{fetchedAt=Date.now()}={}){
+  if(!series||!Array.isArray(series.time)||!series.time.length||
+     ['temperature_2m','precipitation','cloud_cover'].some(key=>
+       !Array.isArray(series[key])||series[key].length!==series.time.length))
+    throw new Error('Invalid ICON-D2 grid point series');
+  const hourly={
+    time:series.time,
+    temperature_2m:series.temperature_2m,
+    precipitation:series.precipitation,
+    cloud_cover:series.cloud_cover,
+  };
+  const extras=['wind_speed_10m','wind_direction_10m','relative_humidity_2m','pressure_msl'];
+  for(const key of extras){
+    hourly[key]=Array.isArray(pointForecast?.hourly?.[key])&&
+      pointForecast.hourly[key].length===pointForecast.hourly.time?.length
+      ? series.time.map(t=>interpolatePointField(pointForecast.hourly,key,t))
+      : Array(series.time.length).fill(null);
+  }
+  return {
+    ...(pointForecast||{}),
+    hourly,timezone:pointForecast?.timezone||'Europe/Berlin',
+    fetchedAt:pointForecast?.fetchedAt||fetchedAt,
+    rawPointForecast:pointForecast,
+    fromRawGrid:true,
+    gridOnly:!pointForecast,
+  };
+}
 export function rgbaForField(field,raw){
   if(field==='cloud'){
     if(raw===255)return [0,0,0,0];
