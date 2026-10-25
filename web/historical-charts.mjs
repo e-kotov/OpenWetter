@@ -30,7 +30,9 @@ export function chartSeries(forecast,past,key,min,max,now){
         [{t:time,v:Number.isFinite(v)?v:null}]:[];
     });
   return {
-    past:collect(past,t=>t<now),
+    // Current-hour model values can precede wall-clock now even though the
+    // API classifies them as forecast output. Display them on the past side.
+    past:[...collect(past,t=>t<now),...collect(forecast,t=>t<now)].sort((a,b)=>a.t-b.t),
     future:collect(forecast,t=>t>=now),
   };
 }
