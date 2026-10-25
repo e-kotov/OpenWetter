@@ -41,7 +41,7 @@ export function createWeatherCrossfade(front,outgoing,{
       // rapid scrubbing interrupts an earlier, unfinished crossfade.
       scratch.width=front.width;scratch.height=front.height;
       const ctx=scratch.getContext('2d');
-      ctx.setTransform(1,0,0,1);
+      ctx.setTransform(1,0,0,1,0,0);
       ctx.clearRect(0,0,scratch.width,scratch.height);
       if(alpha>0){
         ctx.globalAlpha=Math.max(0,Math.min(1,computedOpacity(front)/alpha));
@@ -54,7 +54,7 @@ export function createWeatherCrossfade(front,outgoing,{
       }
       outgoing.width=front.width;outgoing.height=front.height;
       const old=outgoing.getContext('2d');
-      old.setTransform(1,0,0,1);old.drawImage(scratch,0,0);
+      old.setTransform(1,0,0,1,0,0);old.drawImage(scratch,0,0);
       front.style.transition='none';outgoing.style.transition='none';
       front.style.opacity='0';
       outgoing.hidden=false;
