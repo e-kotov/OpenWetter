@@ -1,0 +1,42 @@
+name: Publish original 1 km DWD radar observations
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/produce_radar.py
+      - .github/workflows/radar-data.yml
+permissions:
+  contents: write
+concurrency:
+  group: radar-data
+  cancel-in-progress: false
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HDF5 radar and projection libraries
+        run: python -m pip install numpy h5py pyproj
+      - name: Download and decode latest DWD RY 5-minute radar frames
+        run: python tools/produce_radar.py
+      - name: Publish lossless rain-rate raster frames
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global user.name 'OpenWetter data service'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          mkdir -p /tmp/openwetter-radar
+          mv radar-data/* /tmp/openwetter-radar/
+          cd /tmp/openwetter-radar
+          git init -b radar-data
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add --all
+          git commit -m "Refresh official DWD RADOLAN RY frames ${GITHUB_RUN_ID}"
+          git push --force origin HEAD:refs/heads/radar-data
