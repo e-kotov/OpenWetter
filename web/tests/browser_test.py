@@ -490,7 +490,7 @@ def verify_grids_survive_point_api_abort(browser):
 
 def main():
     with sync_playwright() as p:
-        browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or p.chromium.executable_path,args=['--no-sandbox','--disable-dev-shm-usage'])
+        browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or shutil.which('chromium-browser') or shutil.which('google-chrome') or p.chromium.executable_path,args=['--no-sandbox','--disable-dev-shm-usage'])
         ui('mobile',{'width':390,'height':844},browser)
         ui('desktop',{'width':1440,'height':900},browser)
         verify_grids_survive_point_api_abort(browser)

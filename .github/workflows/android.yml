@@ -22,10 +22,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install Playwright and Chromium
+      - name: Install Playwright and use runner's preinstalled Chromium
         run: |
           pip install playwright
-          python -m playwright install --with-deps chromium
+          if ! command -v chromium >/dev/null 2>&1 && \
+             ! command -v chromium-browser >/dev/null 2>&1 && \
+             ! command -v google-chrome >/dev/null 2>&1; then
+            python -m playwright install --with-deps chromium
+          fi
       - name: Run mocked browser interaction tests
         run: python web/tests/browser_test.py
       - uses: actions/upload-artifact@v4
