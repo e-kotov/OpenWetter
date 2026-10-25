@@ -187,3 +187,5 @@ input[type=range]{width:100%;accent-color:#ff5d6e;cursor:pointer;margin:3px 0}
 .native-overlays{z-index:7;}
 .observations-overlays{transform:translateY(44px);z-index:7;}
 .native-overlays .overlay-btn[disabled]{opacity:.45;cursor:not-allowed;}
+
+.radar-canvas{z-index:3;pointer-events:none;}

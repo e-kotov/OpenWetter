@@ -2,9 +2,10 @@ import {
   MODELS, MODEL_IDS, VARIABLES, DEFAULT_PLACES, clamp, wrappedLongitude, clampLatitude,
   forecastURL, parseForecast, nearestIndex, valueAtTime, axisLimits, hourFloor,
   pickGestureAxis, scrubTimestamp, forecastBounds, timelinePosition, placeKey,
-  safeRadarMetadata, radarTileURL, mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
+  mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
 } from './logic.mjs';
-import {downloadIconGrid,gridIndex,gridValue,paintField} from './icon-grid.mjs';
+import {fetchNativeManifest,downloadNativeFrame,downloadNativePointSeries,
+  paintNativeField,interpolatePointField} from './native-fields.mjs';
 
 const el=id=>document.getElementById(id);
 const fields=[
@@ -13,7 +14,7 @@ const fields=[
   'quickCloud','message','plotsHeading','horizon48','horizon120','graphStack','playBtn','timeLabel',
   'timeRange','timeSlider','startLabel','endLabel','settingsPanel','horizontalSpeed','horizontalOutput',
   'verticalSpeed','verticalOutput','opacitySlider','opacityOutput','cloudOpacitySlider','cloudOpacityOutput',
-  'map','baseTiles','iconCanvas','radarTiles','cloudTiles','toggleRain','toggleClouds',
+  'map','baseTiles','iconCanvas','radarCanvas','radarTiles','cloudTiles','toggleRain','toggleClouds',
   'toggleForecastRain','toggleForecastClouds',
   'mapPin','pinTemp','mapLayerName','mapModelName','modeForecast','modeRadar','zoomIn','zoomOut',
   'resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
@@ -29,18 +30,16 @@ const state={
   anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
   forecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
   radar:null,radarIndex:0,playing:false,
-  iconGrid:null,iconGridError:null,showForecastRain:true,showForecastClouds:false,
+  iconGrid:null,iconGridError:null,gridSeries:null,showForecastRain:true,showForecastClouds:false,
 };
 let fetchEpoch=0;
 const fetchControllers=new Map();
 let radarController=null,playTimer=null,mapRedrawRequest=0,graphRedrawRequest=0,forecastCursorRequest=0;
-let cloudWarningIssued=false;
+let cloudWarningIssued=false,pointSeriesEpoch=0,drawEpoch=0;
 const pointers=new Map();
 let drag=null;
 const FORECAST_MAX_AGE=45*60_000;
-const radarEndpoint='https://api.rainviewer.com/public/weather-maps.json';
 const STORAGE='openwetter.settings.v2';
-const ICON_GRID_URL='https://raw.githubusercontent.com/e-kotov/OpenWetter/icon-data/latest.json.gz';
 
 function save(){
   try{localStorage.setItem(STORAGE,JSON.stringify({place:state.place,favorites:state.favorites,
@@ -78,7 +77,15 @@ function formatTime(seconds,options={weekday:'short',hour:'2-digit',minute:'2-di
 function shortPlace(name){return name.split(',')[0]||name;}
 function fmt(v,metric){if(v==null)return '—';return metric==='precipitation'?v.toFixed(1):String(Math.round(v));}
 function metricValue(model,metric){return valueAtTime(state.forecasts[model],metric,state.selectedTime);}
-function timeBounds(){return forecastBounds(state.anchor,state.horizon);}
+function timeBounds(){
+  const b=forecastBounds(state.anchor,state.horizon);
+  if(state.mode==='forecast' && state.model==='icon_d2' && state.iconGrid){
+    b.min=Math.max(b.min,state.iconGrid.start);b.max=Math.max(b.min,Math.min(b.max,state.iconGrid.end));
+  }
+  return b;
+}
+function timelineStep(){return state.mode==='forecast'&&state.model==='icon_d2'&&state.iconGrid?900:3600;}
+
 function requestMap(){if(!mapRedrawRequest)mapRedrawRequest=requestAnimationFrame(()=>{mapRedrawRequest=0;renderMap();});}
 function requestGraphs(){if(!graphRedrawRequest)graphRedrawRequest=requestAnimationFrame(()=>{graphRedrawRequest=0;drawGraphs();});}
 function requestCursor(){if(!forecastCursorRequest)forecastCursorRequest=requestAnimationFrame(()=>{forecastCursorRequest=0;updateCursor();});}
@@ -131,13 +138,14 @@ function loadModelsForView(){
 }
 async function loadRadar(){
   if(state.radar&&Date.now()-state.radar.fetchedAt<5*60_000)return;
-  radarController?.abort();const controller=new AbortController();radarController=controller;
+  radarController?.abort();
+  const controller=new AbortController();radarController=controller;
   try{
-    const info=safeRadarMetadata(await getJson(radarEndpoint,controller.signal,14000));
+    const metadata=await fetchNativeManifest('radar',{signal:controller.signal});
     if(controller.signal.aborted)return;
-    state.radar={...info,fetchedAt:Date.now()};state.radarIndex=info.frames.length-1;
+    state.radar={...metadata,fetchedAt:Date.now()};state.radarIndex=metadata.frames.length-1;
     showMessage('');updateTimeUI();requestMap();
-  }catch(error){if(!controller.signal.aborted)showMessage(`Observed radar unavailable: ${error.message}`,true);}
+  }catch(error){if(!controller.signal.aborted)showMessage('Official DWD rain radar unavailable: '+error.message,true);}
 }
 function closeDrawer(){dom.placesDrawer.hidden=true;dom.drawerScrim.hidden=true;dom.placesBtn.setAttribute('aria-expanded','false');}
 function openDrawer(){renderPlaces();dom.placesDrawer.hidden=false;dom.drawerScrim.hidden=false;dom.placesBtn.setAttribute('aria-expanded','true');}
@@ -160,10 +168,11 @@ function setPlace(place,{center=true}={}){
   stopPlay();fetchEpoch++;
   for(const ctrl of fetchControllers.values())ctrl.abort();fetchControllers.clear();
   state.loadingModels.clear();state.modelErrors={};state.forecasts={};state.forecast=null;
+  state.gridSeries=null;pointSeriesEpoch++;
   state.anchor=hourFloor(Date.now()/1000);state.selectedTime=state.anchor;
   state.place={name:place.name,latitude:clampLatitude(place.latitude),longitude:wrappedLongitude(place.longitude)};
   if(center){state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;}
-  dom.citySearch.value=state.place.name;save();refreshView();requestMap();loadModelsForView();
+  dom.citySearch.value=state.place.name;save();refreshView();requestMap();loadModelsForView();void loadNativePointSeries();
 }
 function selectModel(model){
   if(!Object.hasOwn(MODELS,model))return;
@@ -246,46 +255,80 @@ function toggleObservation(which){
 }
 
 function applyNativeGridForecast(){
-  const grid=state.iconGrid,point=state.forecasts.icon_d2;
-  if(!grid||!point||gridIndex(grid,state.place.latitude,state.place.longitude)<0)return;
-  const hourly={...point.hourly};
-  for(const [name,field] of [['temperature_2m','temp'],['precipitation','precip'],['cloud_cover','cloud']]){
-    hourly[name]=point.hourly.time.map(t=>gridValue(grid,field,state.place.latitude,state.place.longitude,t));
+  const model=state.forecasts.icon_d2,series=state.gridSeries,grid=state.iconGrid;
+  if(!model||!series||!grid)return;
+  const source=model.rawPointForecast||model;
+  const hourly={time:series.time,temperature_2m:series.temperature_2m,
+    precipitation:series.precipitation,cloud_cover:series.cloud_cover};
+  for(const [name,values] of Object.entries(source.hourly)){
+    if(name==='time'||Object.hasOwn(hourly,name))continue;
+    if(Array.isArray(values))hourly[name]=series.time.map(t=>interpolatePointField(source.hourly,name,t));
   }
-  // Wind remains explicitly from Open-Meteo's DWD ICON-D2 point API.
-  state.forecasts.icon_d2={...point,hourly,fromRawGrid:true};
+  state.forecasts.icon_d2={...source,hourly,rawPointForecast:source,fromRawGrid:true,
+    fetchedAt:source.fetchedAt||Date.now()};
   if(state.model==='icon_d2')state.forecast=state.forecasts.icon_d2;
+}
+async function loadNativePointSeries(){
+  const grid=state.iconGrid,place={...state.place},epoch=++pointSeriesEpoch;
+  if(!grid)return;
+  try{
+    const series=await downloadNativePointSeries(grid,place.latitude,place.longitude);
+    if(epoch!==pointSeriesEpoch)return;
+    state.gridSeries=series;applyNativeGridForecast();refreshView();
+  }catch(error){
+    if(epoch!==pointSeriesEpoch)return;
+    state.gridSeries=null;
+    if(state.model==='icon_d2')showMessage('ICON point series: '+error.message,true);
+  }
 }
 async function loadNativeGrid(){
   try{
-    const grid=await downloadIconGrid(ICON_GRID_URL);
-    if(grid.times.at(-1)<Date.now()/1000)throw new Error('Published forecast expired');
+    const grid=await fetchNativeManifest('icon');
     state.iconGrid=grid;state.iconGridError=null;
-    applyNativeGridForecast();refreshView();
+    await loadNativePointSeries();refreshView();
   }catch(error){
-    state.iconGridError=error.message;state.iconGrid=null;
+    state.iconGridError=error.message;state.iconGrid=null;state.gridSeries=null;
     updateOverlayUI();requestMap();
+    if(state.model==='icon_d2')showMessage('ICON-D2 spatial map unavailable: '+error.message,true);
   }
 }
 function toggleNativeLayer(field){
   if(field==='precip')state.showForecastRain=!state.showForecastRain;
   else if(field==='cloud')state.showForecastClouds=!state.showForecastClouds;
-  else return;
-  updateOverlayUI();save();requestMap();
+  else return;updateOverlayUI();save();requestMap();
 }
-function paintNativeGrid(){
-  const canvas=dom.iconCanvas,rect=dom.map.getBoundingClientRect();
+async function paintNativeGrid(){
+  const canvas=dom.iconCanvas,radar=dom.radarCanvas,rect=dom.map.getBoundingClientRect();
   if(!rect.width||!rect.height)return;
-  canvas.width=Math.round(rect.width);canvas.height=Math.round(rect.height);
-  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
-  const grid=state.iconGrid;
-  if(!grid||state.model!=='icon_d2'||state.mode!=='forecast')return;
-  const step=nearestIndex(grid.times,state.selectedTime);
-  if(step<0||Math.abs(grid.times[step]-state.selectedTime)>1800)return;
-  if(state.showForecastClouds)paintField(ctx,grid,'cloud',step,canvas.width,canvas.height,state.map.zoom,state.map);
-  if(state.showForecastRain)paintField(ctx,grid,'precip',step,canvas.width,canvas.height,state.map.zoom,state.map);
+  const width=rect.width,height=rect.height,ratio=Math.min(2.5,window.devicePixelRatio||1);
+  for(const layer of [canvas,radar]){
+    layer.width=Math.round(width*ratio);layer.height=Math.round(height*ratio);
+    const ctx=layer.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height);
+  }
+  const generation=++drawEpoch,model=state.iconGrid,time=state.selectedTime,map={...state.map};
+  if(state.mode==='forecast'&&state.model==='icon_d2'&&model&&(state.showForecastRain||state.showForecastClouds)){
+    const results=await Promise.allSettled([
+      state.showForecastClouds?downloadNativeFrame(model,'cloud',time):Promise.resolve(null),
+      state.showForecastRain?downloadNativeFrame(model,'precip',time):Promise.resolve(null)
+    ]);
+    if(generation!==drawEpoch)return;
+    const ctx=canvas.getContext('2d');
+    const clouds=results[0].status==='fulfilled'?results[0].value:null;
+    const rain=results[1].status==='fulfilled'?results[1].value:null;
+    if(clouds)paintNativeField(ctx,model,clouds.data,'cloud',width,height,map.zoom,map,.58);
+    if(rain)paintNativeField(ctx,model,rain.data,'precip',width,height,map.zoom,map,.87);
+    if(state.showForecastRain)for(const dt of [-900,900])void downloadNativeFrame(model,'precip',time+dt).catch(()=>{});
+  }
+  if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
+    const frameTime=state.radar.frames[state.radarIndex]?.time;
+    try{
+      const observed=await downloadNativeFrame(state.radar,'radar',frameTime);
+      if(generation!==drawEpoch)return;
+      if(observed)paintNativeField(radar.getContext('2d'),state.radar,observed.data,'radar',
+        width,height,map.zoom,map,1);
+    }catch(error){if(generation===drawEpoch)showMessage('DWD radar frame: '+error.message,true);}
+  }
 }
-
 function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}
 function play(){
   if(state.playing){stopPlay();return;}
