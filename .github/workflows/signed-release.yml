@@ -15,14 +15,10 @@ permissions:
   contents: read
 jobs:
   signed-release:
+    if: github.repository == 'e-kotov/OpenWetter' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      OPENWETTER_KEYSTORE_BASE64: ${{ secrets.OPENWETTER_KEYSTORE_BASE64 }}
-      OPENWETTER_KEYSTORE_PASSWORD: ${{ secrets.OPENWETTER_KEYSTORE_PASSWORD }}
-      OPENWETTER_KEY_ALIAS: ${{ secrets.OPENWETTER_KEY_ALIAS }}
-      OPENWETTER_KEY_PASSWORD: ${{ secrets.OPENWETTER_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate release tag and private signing configuration
@@ -32,18 +28,25 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || {
             echo '::error::Release tag must be a semantic version (e.g. v0.1.0-beta.1)'; exit 1;
           }
-          for name in OPENWETTER_KEYSTORE_BASE64 OPENWETTER_KEYSTORE_PASSWORD OPENWETTER_KEY_ALIAS OPENWETTER_KEY_PASSWORD; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Missing repository Actions secret: $name"
-              exit 1
-            fi
-          done
+          if [ "$(printf '%s' "$OPENWETTER_SIGNING_PASSPHRASE" | wc -c)" -lt 40 ]; then
+            echo '::error::Configure OPENWETTER_SIGNING_PASSPHRASE (40+ random characters) in GitHub Actions secrets first.'
+            exit 1
+          fi
+          if [ ! -s signing/openwetter-release.p12.gpg ] || [ ! -s signing/openwetter-release.pem ]; then
+            echo '::error::Run the Provision OpenWetter signing key workflow before signing a release.'
+            exit 1
+          fi
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" ]; then
+            echo '::error::Release tag already exists; choose a new version'
+            exit 1
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo '::error::Release tag already exists; choose a new version'; exit 1
           fi
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
       - name: Stamp chosen version into this build (without changing Git history)
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -72,28 +75,30 @@ jobs:
           gradle-version: '8.9'
       - name: Build unsigned release APK
         run: gradle -p android :app:assembleRelease --stacktrace
-      - name: Sign with persistent private release certificate
+      - name: Decrypt and sign with the persistent private certificate
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          printf '%s' "$OPENWETTER_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/openwetter-release.jks"
+          PRIVATE_KEY="$RUNNER_TEMP/openwetter-release.p12"
+          trap 'rm -f "$PRIVATE_KEY" dist/aligned.apk' EXIT
+          bash tools/signing-key.sh decrypt signing "$PRIVATE_KEY"
           APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           test -s "$APK"
           mkdir -p dist
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$APK" dist/aligned.apk
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
-            --ks "$RUNNER_TEMP/openwetter-release.jks" \
-            --ks-key-alias "$OPENWETTER_KEY_ALIAS" \
-            --ks-pass env:OPENWETTER_KEYSTORE_PASSWORD \
-            --key-pass env:OPENWETTER_KEY_PASSWORD \
-            --out "dist/OpenWetter-${RELEASE_TAG}.apk" dist/aligned.apk
+            --ks "$PRIVATE_KEY" \
+            --ks-key-alias openwetter \
+            --ks-pass env:OPENWETTER_SIGNING_PASSPHRASE \
+            --key-pass env:OPENWETTER_SIGNING_PASSPHRASE \
+            --out "dist/OpenWetter-$RELEASE_TAG.apk" dist/aligned.apk
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify \
-            --verbose --print-certs "dist/OpenWetter-${RELEASE_TAG}.apk"
-          rm -f "$RUNNER_TEMP/openwetter-release.jks" dist/aligned.apk
-          (cd dist && sha256sum "OpenWetter-${RELEASE_TAG}.apk" > SHA256SUMS.txt)
+            --verbose --print-certs "dist/OpenWetter-$RELEASE_TAG.apk"
+          (cd dist && sha256sum "OpenWetter-$RELEASE_TAG.apk" > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: openwetter-signed-release

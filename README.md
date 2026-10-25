@@ -32,7 +32,7 @@ gradle -p android :app:assembleDebug
 
 ## Signing for future updates
 
-**See [SIGNING.md](SIGNING.md)** to set up a **persistent, privately held release certificate** with GitHub Actions encrypted secrets. Once configured, the [signed release workflow](.github/workflows/signed-release.yml) creates a signed APK with a stable identity for Android updates. **Signing does not suppress Google Play Protect's sideloading scan prompts.** Do not commit private keys or passwords to this public repository.
+**See [SIGNING.md](SIGNING.md)** for a GitHub-only, one-time [signing-key provisioning workflow](.github/workflows/provision-signing.yml). Set one strong private Actions password, generate the certificate on the GitHub runner, and store only the encrypted keystore and public certificate in the repository. Then the [signed release workflow](.github/workflows/signed-release.yml) creates release APKs with a stable signing identity. **Signing does not suppress Google Play Protect's sideloading scan prompts.** Do not commit private keys or passwords to this public repository.
 
 ## Data source and publishing workflow
 
