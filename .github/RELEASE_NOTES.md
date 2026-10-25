@@ -1,24 +1,24 @@
-# OpenWetter v0.1.0-beta.3 — six hours of observed radar and clear forecast controls
+# OpenWetter v0.1.0-beta.4 — smooth real-frame weather animation
 
-Android 8.0+ · Permanently signed by the **same OpenWetter release certificate as beta.1 and beta.2**. Install over beta.2 without uninstalling.
+Android 8.0+ · Permanently signed with the **same OpenWetter signing certificate as beta.1–beta.3**, so this release should install over beta.3 without uninstalling.
 
-## Past observations versus future predictions
+## New: subtle seamless rain/cloud transitions
 
-- **Radar · past 6h** at the top of the map now means actual DWD RADOLAN RY precipitation measurements, not forecasts. Select **Past 2h** for a shorter animation or **Past 6h** to inspect a full six hours of historical scans.
-- The radar publisher now retains **73 original five-minute observation slots**, providing a six-hour interval from earliest to latest when DWD offers a complete run. Native radar spatial resolution remains **1 km**.
-- **Forecast · future** separately selects the DWD ICON model's predicted rainfall and clouds. ICON-D2 provides 15-minute precipitation steps and approximately 2 km native detail; ICON-EU offers lighter hourly precipitation tiles at about 7 km detail.
-- The app now identifies the active layer in large map tabs, displays its actual observation or prediction time, and gives each mode the correct independent time slider.
-- Forecast horizon buttons (48 hours / 5 days) are hidden in radar mode. Radar history buttons (Past 2h / Past 6h) are hidden in forecast mode. Forecast graphs are clearly identified as predictions even while radar history is displayed.
-- The optional live radar overlay in forecast mode explicitly says **observed**, not future prediction, and is not shown as a separate toggle while radar is the primary map.
+- Weather frames now use a **260 ms visual crossfade** instead of abruptly swapping the whole precipitation image.
+- **Observed DWD RADOLAN-RY radar** transitions between genuine **five-minute** scans, covering up to six hours of history.
+- **DWD ICON-D2** precipitation and cloud imagery transitions between the real **15-minute precipitation** and hourly cloud fields. Each geographic chunk still carries the original 48-hour model run.
+- **ICON-EU** hourly precipitation WMS map tiles use the same transition once all tiles for the next hour have arrived.
+- The old weather frame remains visible while new data load; blending begins only when the new frame is ready.
+- Rapid scrubbing may interrupt an earlier fade; the current visible blend is captured as the starting image to reduce flicker.
+- Panning, zooming, resizing, changing models, or toggling map layers does **not** animate the old geographic or model scene.
+- New **Settings → Smooth weather frame transitions (260 ms)** checkbox (on by default), persisted on device; Android **Reduced Motion** is respected.
 
-## Performance and storage
+## Scientific accuracy
 
-- The compressed six-hour radar history was verified at approximately **37.7 MB total** on October 25, 2026. It is served as individually requested observations, not downloaded in full on launch.
-- The Settings control **Cache 6h observed radar** preloads history explicitly on Wi-Fi. The compressed on-device radar cache now holds up to 90 frames, so repeated scrubbing should not re-download the same weather observations while cached.
-- The six-hour publisher and browser/Android tests passed. The source DWD directory retains more historical observations than the app currently publishes; six hours is OpenWetter's chosen bounded window.
+The fade is a **visual display transition only**. No synthetic radar scan, new forecast time step, optical-flow movement, or intermediate precipitation value is generated. Every frame retains its original DWD timestamp, and the displayed point graphs still use native-derived DWD values and separately labelled wind data.
 
-## Installation and limitations
+## Verification and limitations
 
-Future releases continue using the established permanent OpenWetter signing identity. The first migration from debug-signed alpha versions still requires uninstalling that debug APK; beta.3 can directly update beta.1 or beta.2 subject to Android version codes.
+GitHub Actions verifies JavaScript tests, mocked Chromium mobile/desktop interaction and Android build. This release fixes a canvas compositor regression discovered during those browser tests. Physical Android performance on the user's device remains to be checked; slow connections can still delay uncached frames, but should not create an empty weather map.
 
-Physical Android performance remains unverified; GitHub Actions schedules can lag and DWD may occasionally omit a scan, in which case actual available history can be shorter. The app never fabricates missing radar data. Google Play Protect may continue requesting scans for APKs installed outside Google Play.
+This remains a GitHub-distributed prerelease, and Google Play Protect may still suggest a scan.
