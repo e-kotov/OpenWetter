@@ -231,7 +231,7 @@ function updateOverlayUI(){
   dom.radarAttribution.textContent=(visibleRain?' · Radar © RainViewer':'')+
     (state.showClouds?' · Satellite © DWD':'');
   dom.mapModelName.textContent=state.mode==='radar'?'Radar history · independent timeline':
-    (realGrid?`DWD run ${state.iconGrid.run} · 0.05° map`:state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`);
+    (realGrid?`DWD run ${state.iconGrid.run} · 0.05° map`:(observations.length?'Observations do not follow ICON time':state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`));
 }
 function toggleObservation(which){
   if(which==='rain'){
