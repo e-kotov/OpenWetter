@@ -425,6 +425,10 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[0].time')
     assert page.evaluate('(url)=>window.__mockCounts().radarFiles[url]||0',oldest_url)==1,'Previously viewed radar frame was downloaded twice'
     assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
+    # Restore smooth animation after the earlier explicit reduced-animation test.
+    page.locator('#settingsBtn').click()
+    page.locator('#smoothFrames').check()
+    page.locator('#settingsBtn').click()
     # New continuous playback keeps true observations before forecasts and blends the source boundary.
     page.locator('#modeContinuous').click()
     assert state('mode')=='continuous'
@@ -440,17 +444,7 @@ def ui(kind,viewport,browser):
     assert state('continuousCursor.kind')=='forecast'
     assert page.locator('#boundaryTransitionCanvas').get_attribute('data-from-source')=='radar'
     assert page.locator('#boundaryTransitionCanvas').get_attribute('data-to-source')=='forecast'
-    page.wait_for_timeout(800)
-    boundary_diag=page.evaluate('''()=>{
-      const layer=document.querySelector('#boundaryTransitionCanvas');
-      return {opacity:layer.style.opacity,hidden:layer.hidden,from:layer.dataset.fromSource,
-        to:layer.dataset.toSource,frame:document.querySelector('#iconCanvas').dataset.weatherFrame,
-        current:openwetterTest.state.continuousCursor,model:openwetterTest.state.model,
-        wms:openwetterTest.state.euWms?.last,selected:openwetterTest.state.selectedTime,
-        map:document.querySelector('#mapModelName').textContent,message:document.querySelector('#message').textContent};
-    }''')
-    print('Boundary diagnostic:',boundary_diag,flush=True)
-    assert boundary_diag['opacity']=='0',boundary_diag
+    page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
     input_range(page,'#timeSlider',first_forecast-1)
     assert state('continuousCursor.kind')=='radar'
     page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
