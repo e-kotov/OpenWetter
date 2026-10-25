@@ -220,3 +220,8 @@ input[type=range]{width:100%;accent-color:#ff5d6e;cursor:pointer;margin:3px 0}
 @media (prefers-reduced-motion: reduce){
   .weather-crossfade{transition:none!important}
 }
+
+.boundary-weather-crossfade{z-index:5;opacity:0;pointer-events:none}
+.boundary-weather-crossfade[hidden]{display:none!important}
+@media(max-width:700px){.map-mode .mode-btn{font-size:9px;padding:8px 2px}}
+@media(prefers-reduced-motion:reduce){.boundary-weather-crossfade{transition:none!important}}
