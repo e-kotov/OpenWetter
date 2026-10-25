@@ -688,7 +688,8 @@ async function paintNativeGrid(){
        ()=>generation===forecastPaintEpoch,
        ()=>crossfades.forecast.beforeDraw(
          `icon-eu:${state.euWms.run}:${time}`,forecastScene,{resized:iconResized}))
-       .catch(error=>{if(generation===forecastPaintEpoch)showMessage('ICON-EU WMS tiles: '+error.message,true);});
+       .then(painted=>{if(painted&&generation===forecastPaintEpoch&&state.mode==='continuous'&&combinedFrame()?.kind==='forecast')completeBoundaryTransition('forecast');})
+        .catch(error=>{if(generation===forecastPaintEpoch)showMessage('ICON-EU WMS tiles: '+error.message,true);});
   }else{
     crossfades.forecast.stop();
     iconCtx.clearRect(0,0,width,height);
