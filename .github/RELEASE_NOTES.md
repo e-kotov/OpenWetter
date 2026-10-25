@@ -1,19 +1,20 @@
-# OpenWetter v0.1.0-alpha.5 — smoother DWD radar scrubbing
+# OpenWetter v0.1.0-alpha.6 — persistent weather cache
 
-Experimental debug-signed APK for Android 8.0+.
+Early, debug-signed Android build for Android 8.0+.
 
-## Radar animation improvements
-- Keep the last decoded 5-minute DWD RADOLAN RY observation on screen while the next frame downloads.
-- Show the **actual displayed radar timestamp** separately from the requested timestamp while buffering.
-- Decode and recolour only the visible part of the genuine 1 km radar grid instead of all 4.3 million pixels on every swipe.
-- Cache radar observations separately from forecast fields, prefetch adjacent frames, and coalesce rapid finger movements so they do not generate many simultaneous downloads.
-- The ICON-D2 forecast canvas also keeps its previous frame visible while loading.
-- Adjust DWD data refresh schedules away from minute zero, where GitHub often delays jobs.
+## Fixes: fewer mobile-data transfers during scrubbing
 
-## Existing features
-- Real native-derived DWD ICON-D2 15-minute precipitation forecast and hourly cloud/temperature grids.
-- Direct DWD 1 km/5-minute observed rain radar and separate observed satellite clouds.
-- Map scrubbing, 15-minute forecast timeline, model comparison, synchronized point graphs and saved locations.
+- Weather frames are kept as their original compressed DWD data in Android WebView CacheStorage, surviving app restarts where Android permits storage. They are also retained in a separate bounded decoded-RAM cache.
+- The full 24-frame DWD RADOLAN RY radar history can be cached locally (~13.7 MB compressed); a new observation no longer changes the URLs of existing frames.
+- ICON-D2 rainfall and cloud forecast maps can be explicitly preloaded (~125 MB compressed for 193 precipitation and 49 cloud frames). Individual downloaded frames are retained automatically, so previously viewed forecast times don't require another network transfer.
+- Settings provides two progress-reporting, cancellable cache-preload controls. Downloads are user initiated to avoid unexpected large mobile-data usage.
+- Model point-series tiles use persistent compressed caching too, avoiding repeated downloads for multiple nearby selected locations.
+- Radar frame visual continuity, visible-viewport rendering and bounded nearby-frame prefetch from alpha.5 are retained.
 
 ## Limitations
-Android builds are tested in CI and mocked Chromium but not on a real Android device. An uncached observation still takes time to download, and GitHub Actions scheduling does not guarantee exact five-minute publication. This is **debug-signed**, so installation may require removing the previous preview, and Google Play Protect may still request scanning. See [SIGNING.md](../../blob/main/SIGNING.md) for permanent release signing.
+
+The first visit to a frame still requires network unless it has been preloaded, and saved compressed data must still be decompressed when evicted from RAM. CacheStorage can be unavailable or cleared by Android when storage is constrained. DWD radar publication requires its separate data workflow; this app cannot fabricate observations when the feed is stale.
+
+Tests cover CacheStorage persistence, cache eviction, historical radar URL stability, network fetch deduplication, mocked Android-sized browser scrubbing, and Android compilation. **Real phone performance and storage persistence remain unverified.**
+
+This is a temporary-key debug APK, not yet signed with the permanent signing identity. See [SIGNING.md](../../blob/main/SIGNING.md). APK signing does not bypass Google Play Protect scans.
