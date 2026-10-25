@@ -52,7 +52,7 @@ def run(layer):
           "layers":"dwd:"+layer,"styles":"","format":"image/png","transparent":"true",
           "srs":"EPSG:3857","bbox":",".join(str(round(z,2)) for z in (x0,y0,x1,y1)),
           "width":"256","height":"256","time":iso}
-    for k,v in dims:
+    for k,v,_ in dims:
         if k and k.upper()=="REFERENCE_TIME" and v:args["DIM_REFERENCE_TIME"]=v
     try:
         status,mime,img=get(ROOT+"/wms?"+urlencode(args))
