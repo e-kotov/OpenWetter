@@ -69,10 +69,14 @@
   </section>
 
   <section id="map" class="map" aria-label="Weather map: swipe right or up to move forward in time; two fingers to pan or zoom">
-    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><div id="radarTiles" class="tiles radar-tiles"></div><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
+    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><canvas id="iconCanvas" class="icon-grid-layer" aria-label="Genuine DWD ICON-D2 rain and cloud forecast maps"></canvas><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><div id="radarTiles" class="tiles radar-tiles"></div><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
     <div class="map-label"><span class="map-dot"></span><span id="mapLayerName">Forecast point</span><small id="mapModelName">DWD ICON-D2</small></div>
     <div class="map-mode" role="group" aria-label="Timeline mode"><button id="modeForecast" class="mode-btn active" aria-pressed="true">Forecast point</button><button id="modeRadar" class="mode-btn" aria-pressed="false">Radar history</button></div>
-    <div class="map-overlays" role="group" aria-label="Live observed map overlays">
+    <div class="map-overlays native-overlays" role="group" aria-label="Time-changing ICON-D2 forecast map layers">
+      <button id="toggleForecastRain" class="overlay-btn" aria-pressed="true">🌧 ICON rain forecast</button>
+      <button id="toggleForecastClouds" class="overlay-btn" aria-pressed="false">☁ ICON cloud forecast</button>
+    </div>
+    <div class="map-overlays observations-overlays" role="group" aria-label="Live observed map overlays">
       <button id="toggleRain" class="overlay-btn" aria-pressed="false" title="Show latest observed rain radar, independent of forecast time">☔ Rain radar</button>
       <button id="toggleClouds" class="overlay-btn" aria-pressed="false" title="Show current Meteosat satellite clouds, independent of forecast time">☁ Satellite clouds</button>
     </div>

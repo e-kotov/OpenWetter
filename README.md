@@ -82,3 +82,9 @@ The [GitHub Releases page](https://github.com/e-kotov/OpenWetter/releases) provi
 ## GitHub Actions
 
 [CI workflows](https://github.com/e-kotov/OpenWetter/actions) run the Node unit tests, mocked Chromium mobile/desktop UI tests, and Android debug build. The build uploads `openwetter-debug-apk` as an artifact. This **debug APK** is for personal testing, not signed release distribution. If any CI job is red, inspect its logs rather than assuming the Android shell works.
+
+## DWD ICON-D2 spatial forecast pipeline
+
+A dedicated scheduled [ICON grid pipeline](.github/workflows/icon-data.yml) downloads **real DWD ICON-D2 native GRIB2** fields for latitude, longitude, cloud cover, precipitation and temperature every six hours using ecCodes and SciPy. It samples native grid cells onto a **0.05° (~3–5 km) display raster**, publishing 49 hourly frames in the compressed `latest.json.gz` file on the `icon-data` branch. This is genuine ICON-D2 data, but the map has lower resolution than the native ICON-D2 mesh, and nearest-neighbour sampling is not conservative precipitation regridding.
+
+When published data are available, map rain/cloud fields respond to timeline scrubbing and the temperature, rain and cloud graphs for places inside the domain are sampled from those same grids. Wind remains from the Open-Meteo ICON-D2 point API. ICON-EU and Global currently still use Open-Meteo point forecasts and have no forecast grid layers. When the grid service is unavailable or expired, the app does not invent weather fields and continues with separate point forecasts.

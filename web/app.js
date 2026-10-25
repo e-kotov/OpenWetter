@@ -4,6 +4,7 @@ import {
   pickGestureAxis, scrubTimestamp, forecastBounds, timelinePosition, placeKey,
   safeRadarMetadata, radarTileURL, mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
 } from './logic.mjs';
+import {downloadIconGrid,gridIndex,gridValue,paintField} from './icon-grid.mjs';
 
 const el=id=>document.getElementById(id);
 const fields=[
@@ -12,7 +13,8 @@ const fields=[
   'quickCloud','message','plotsHeading','horizon48','horizon120','graphStack','playBtn','timeLabel',
   'timeRange','timeSlider','startLabel','endLabel','settingsPanel','horizontalSpeed','horizontalOutput',
   'verticalSpeed','verticalOutput','opacitySlider','opacityOutput','cloudOpacitySlider','cloudOpacityOutput',
-  'map','baseTiles','radarTiles','cloudTiles','toggleRain','toggleClouds',
+  'map','baseTiles','iconCanvas','radarTiles','cloudTiles','toggleRain','toggleClouds',
+  'toggleForecastRain','toggleForecastClouds',
   'mapPin','pinTemp','mapLayerName','mapModelName','modeForecast','modeRadar','zoomIn','zoomOut',
   'resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
   'placesList','savePlace',
@@ -27,6 +29,7 @@ const state={
   anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
   forecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
   radar:null,radarIndex:0,playing:false,
+  iconGrid:null,iconGridError:null,showForecastRain:true,showForecastClouds:false,
 };
 let fetchEpoch=0;
 const fetchControllers=new Map();
@@ -37,12 +40,14 @@ let drag=null;
 const FORECAST_MAX_AGE=45*60_000;
 const radarEndpoint='https://api.rainviewer.com/public/weather-maps.json';
 const STORAGE='openwetter.settings.v2';
+const ICON_GRID_URL='https://raw.githubusercontent.com/e-kotov/OpenWetter/icon-data/latest.json.gz';
 
 function save(){
   try{localStorage.setItem(STORAGE,JSON.stringify({place:state.place,favorites:state.favorites,
     model:state.model,horizon:state.horizon,horizontalHours:state.horizontalHours,
     verticalHours:state.verticalHours,radarOpacity:state.radarOpacity,cloudOpacity:state.cloudOpacity,
-    showRain:state.showRain,showClouds:state.showClouds}));}catch{/* Browsers may deny storage. */}
+    showRain:state.showRain,showClouds:state.showClouds,
+    showForecastRain:state.showForecastRain,showForecastClouds:state.showForecastClouds}));}catch{/* Browsers may deny storage. */}
 }
 function validPlace(p){return p&&typeof p.name==='string'&&p.name.length>0&&p.name.length<150&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=85&&Math.abs(p.longitude)<=180;}
 function loadPreferences(){
@@ -60,6 +65,8 @@ function loadPreferences(){
     if(Number.isFinite(p.cloudOpacity))state.cloudOpacity=clamp(p.cloudOpacity,.1,1);
     if(typeof p.showRain==='boolean')state.showRain=p.showRain;
     if(typeof p.showClouds==='boolean')state.showClouds=p.showClouds;
+    if(typeof p.showForecastRain==='boolean')state.showForecastRain=p.showForecastRain;
+    if(typeof p.showForecastClouds==='boolean')state.showForecastClouds=p.showForecastClouds;
   }catch{/* Use defaults. */}
 }
 function showMessage(msg,error=false){dom.message.textContent=msg;dom.message.className=`message${msg?' visible':''}${error?' error':''}`;}
@@ -105,6 +112,7 @@ async function loadModel(model,epoch=fetchEpoch){
     const result=parseForecast(await getJson(forecastURL({...state.place,model}),controller.signal));
     if(controller.signal.aborted||epoch!==fetchEpoch)return;
     state.forecasts[model]={...result,fetchedAt:Date.now()};
+    if(model==='icon_d2')applyNativeGridForecast();
     try{localStorage.setItem(cacheId(model),JSON.stringify({savedAt:Date.now(),forecast:result}));}catch{/* optional */}
     if(model===state.model){state.forecast=state.forecasts[model];showMessage('');}
   }catch(error){
@@ -183,7 +191,7 @@ function setSelectedTime(time){
   const next=clamp(Math.round(time/3600)*3600,min,max);
   if(next===state.selectedTime)return;
   state.selectedTime=next;state.forecastIndex=state.forecast?nearestIndex(state.forecast.hourly.time,next):0;
-  updateReadouts();updateTimeUI();requestCursor();
+  updateReadouts();updateTimeUI();requestCursor();requestMap();
 }
 function getRadarTime(){return state.radar?.frames?.[state.radarIndex]?.time||null;}
 function setRadarIndex(index){
@@ -208,17 +216,22 @@ function updateOverlayUI(){
   const visibleRain=state.mode==='radar'||state.showRain;
   dom.toggleRain.setAttribute('aria-pressed',String(visibleRain));
   dom.toggleClouds.setAttribute('aria-pressed',String(state.showClouds));
+  const realGrid=state.mode==='forecast'&&state.model==='icon_d2'&&!!state.iconGrid;
+  dom.toggleForecastRain.setAttribute('aria-pressed',String(state.showForecastRain));
+  dom.toggleForecastClouds.setAttribute('aria-pressed',String(state.showForecastClouds));
+  dom.toggleForecastRain.disabled=state.model!=='icon_d2';
+  dom.toggleForecastClouds.disabled=state.model!=='icon_d2';
   dom.radarTiles.style.display=visibleRain?'block':'none';
   dom.cloudTiles.hidden=!state.showClouds;
   const observations=[];
   if(visibleRain)observations.push('rain radar');
   if(state.showClouds)observations.push('satellite clouds');
   dom.mapLayerName.textContent=state.mode==='radar'?'Rain radar · observed':
-    (observations.length?`Observed: ${observations.join(' + ')}`:'Point forecast · no map field');
+    (realGrid?'ICON-D2 forecast · spatial grid':(observations.length?`Observed: ${observations.join(' + ')}`:'ICON forecast grid unavailable'));
   dom.radarAttribution.textContent=(visibleRain?' · Radar © RainViewer':'')+
     (state.showClouds?' · Satellite © DWD':'');
   dom.mapModelName.textContent=state.mode==='radar'?'Radar history · independent timeline':
-    (observations.length?'Observations do not follow ICON time':`DWD ${MODELS[state.model].label}`);
+    (realGrid?`DWD run ${state.iconGrid.run} · 0.05° map`:state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`);
 }
 function toggleObservation(which){
   if(which==='rain'){
@@ -231,6 +244,48 @@ function toggleObservation(which){
   else return;
   updateOverlayUI();save();requestMap();
 }
+
+function applyNativeGridForecast(){
+  const grid=state.iconGrid,point=state.forecasts.icon_d2;
+  if(!grid||!point||gridIndex(grid,state.place.latitude,state.place.longitude)<0)return;
+  const hourly={...point.hourly};
+  for(const [name,field] of [['temperature_2m','temp'],['precipitation','precip'],['cloud_cover','cloud']]){
+    hourly[name]=point.hourly.time.map(t=>gridValue(grid,field,state.place.latitude,state.place.longitude,t));
+  }
+  // Wind remains explicitly from Open-Meteo's DWD ICON-D2 point API.
+  state.forecasts.icon_d2={...point,hourly,fromRawGrid:true};
+  if(state.model==='icon_d2')state.forecast=state.forecasts.icon_d2;
+}
+async function loadNativeGrid(){
+  try{
+    const grid=await downloadIconGrid(ICON_GRID_URL);
+    if(grid.times.at(-1)<Date.now()/1000)throw new Error('Published forecast expired');
+    state.iconGrid=grid;state.iconGridError=null;
+    applyNativeGridForecast();refreshView();
+  }catch(error){
+    state.iconGridError=error.message;state.iconGrid=null;
+    updateOverlayUI();requestMap();
+  }
+}
+function toggleNativeLayer(field){
+  if(field==='precip')state.showForecastRain=!state.showForecastRain;
+  else if(field==='cloud')state.showForecastClouds=!state.showForecastClouds;
+  else return;
+  updateOverlayUI();save();requestMap();
+}
+function paintNativeGrid(){
+  const canvas=dom.iconCanvas,rect=dom.map.getBoundingClientRect();
+  if(!rect.width||!rect.height)return;
+  canvas.width=Math.round(rect.width);canvas.height=Math.round(rect.height);
+  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
+  const grid=state.iconGrid;
+  if(!grid||state.model!=='icon_d2'||state.mode!=='forecast')return;
+  const step=nearestIndex(grid.times,state.selectedTime);
+  if(step<0||Math.abs(grid.times[step]-state.selectedTime)>1800)return;
+  if(state.showForecastClouds)paintField(ctx,grid,'cloud',step,canvas.width,canvas.height,state.map.zoom,state.map);
+  if(state.showForecastRain)paintField(ctx,grid,'precip',step,canvas.width,canvas.height,state.map.zoom,state.map);
+}
+
 function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}
 function play(){
   if(state.playing){stopPlay();return;}
@@ -291,7 +346,8 @@ function updateReadouts(){
 function refreshView(){
   dom.locationName.textContent=state.place.name;
   dom.headerPlace.textContent=shortPlace(state.place.name);
-  dom.modelDescription.textContent=`${MODELS[state.model].label} · ${MODELS[state.model].subtitle}`;
+  dom.modelDescription.textContent=`${MODELS[state.model].label} · ${MODELS[state.model].subtitle}`+
+    (state.forecasts[state.model]?.fromRawGrid?' · rain/cloud/temp from gridded DWD':'');
   dom.modelSelect.value=state.model;
   dom.horizon48.classList.toggle('active',state.horizon===48);
   dom.horizon120.classList.toggle('active',state.horizon===120);
@@ -447,6 +503,7 @@ function renderMap(){
     tiles.push({key:`${z}/${xx}/${y}`,url:`https://tile.openstreetmap.org/${z}/${xx}/${y}.png`,size:256,left:x*256-topLeft.x,top:y*256-topLeft.y});
   }
   tileLayer(dom.baseTiles,tiles);
+  paintNativeGrid();
   if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
     const rz=Math.min(z,7),scale=2**(z-rz),tileSize=256*scale,limit=2**rz;
     const radarTiles=[];
@@ -559,6 +616,8 @@ function wire(){
   dom.modeRadar.addEventListener('click',()=>setMode('radar'));
   dom.toggleRain.addEventListener('click',()=>toggleObservation('rain'));
   dom.toggleClouds.addEventListener('click',()=>toggleObservation('clouds'));
+  dom.toggleForecastRain.addEventListener('click',()=>toggleNativeLayer('precip'));
+  dom.toggleForecastClouds.addEventListener('click',()=>toggleNativeLayer('cloud'));
   dom.zoomIn.addEventListener('click',()=>zoom(1));dom.zoomOut.addEventListener('click',()=>zoom(-1));
   dom.resetView.addEventListener('click',()=>{state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;requestMap();});
   dom.settingsBtn.addEventListener('click',()=>{
@@ -637,10 +696,10 @@ dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;
 dom.cloudTiles.style.opacity=String(state.cloudOpacity);
 updateOverlayUI();
 if(state.showRain)void loadRadar();
-refreshView();loadModelsForView();
+refreshView();loadModelsForView();void loadNativeGrid();
 if('serviceWorker' in navigator&&!new URLSearchParams(location.search).has('no-sw')&&(location.protocol==='https:'||location.hostname==='localhost')){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
 // Unit and browser tests can inspect the state with ?test=1; no production dependency.
 if(new URLSearchParams(location.search).has('test'))window.openwetterTest={state,setSelectedTime,setHorizon,setMode,setView,setPlace,
-  selectModel,renderMap,drawGraphs,updateCursor,pickGestureAxis,toggleObservation};
+  selectModel,renderMap,drawGraphs,updateCursor,pickGestureAxis,toggleObservation,toggleNativeLayer,applyNativeGridForecast};
