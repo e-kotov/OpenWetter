@@ -23,6 +23,7 @@ SPATIAL = (ROOT/'spatial-icon.mjs').read_text()
 WMS_EU = (ROOT/'wms-eu.mjs').read_text()
 TRANSITION = (ROOT/'frame-transition.mjs').read_text()
 CONTINUOUS = (ROOT/'continuous-timeline.mjs').read_text()
+HISTORY = (ROOT/'historical-charts.mjs').read_text()
 FRAME_CACHE = (ROOT/'frame-cache.mjs').read_text()
 frame_cache_url = 'data:text/javascript;base64,'+base64.b64encode(FRAME_CACHE.encode()).decode()
 GRID = GRID.replace("from './logic.mjs'", f"from '{logic_url}'")
@@ -37,6 +38,7 @@ WMS_EU = WMS_EU.replace("from './frame-cache.mjs'", f"from '{frame_cache_url}'")
 wms_url = 'data:text/javascript;base64,'+base64.b64encode(WMS_EU.encode()).decode()
 transition_url = 'data:text/javascript;base64,'+base64.b64encode(TRANSITION.encode()).decode()
 continuous_url = 'data:text/javascript;base64,'+base64.b64encode(CONTINUOUS.encode()).decode()
+history_url = 'data:text/javascript;base64,'+base64.b64encode(HISTORY.encode()).decode()
 APP = APP.replace("from './logic.mjs'", f"from '{logic_url}'")
 APP = APP.replace("from './icon-grid.mjs'", f"from '{grid_url}'")
 APP = APP.replace("from './native-fields.mjs'", f"from '{native_url}'")
@@ -44,6 +46,7 @@ APP = APP.replace("from './spatial-icon.mjs'", f"from '{spatial_url}'")
 APP = APP.replace("from './wms-eu.mjs'", f"from '{wms_url}'")
 APP = APP.replace("from './frame-transition.mjs'", f"from '{transition_url}'")
 APP = APP.replace("from './continuous-timeline.mjs'", f"from '{continuous_url}'")
+APP = APP.replace("from './historical-charts.mjs'", f"from '{history_url}'")
 APP = APP.replace("if(new URLSearchParams(location.search).has('test'))window.openwetterTest=", "window.openwetterTest=")
 APP_B64 = base64.b64encode(APP.encode()).decode()
 HTML = HTML.replace('<link rel="stylesheet" href="styles.css"/>', '<style>'+CSS+'</style>')
@@ -59,7 +62,8 @@ BOOTSTRAP = r'''async (app64) => {
   const forecast=(url)=>{
     const model=new URL(url).searchParams.get('models');
     const count=model==='icon_d2'?48:120;
-    const n=Array.from({length:count},(_,i)=>i);
+    const past=Number(new URL(url).searchParams.get('past_hours')||0);
+    const n=Array.from({length:count+past},(_,i)=>i-past);
     const offset={icon_d2:0,icon_eu:4,icon_global:-2}[model];
     return {latitude:51.51,longitude:7.46,timezone:'Europe/Berlin',hourly:{
       time:n.map(i=>now+3600*i),
@@ -351,7 +355,7 @@ def ui(kind,viewport,browser):
     # its own time controls, while forecasts retain their future window.
     page.locator('#modeRadar').click()
     assert 'OBSERVED RADAR' in page.locator('#mapLayerName').inner_text()
-    assert 'Forecast graphs' in page.locator('#plotsHeading').inner_text()
+    assert 'Past ICON estimates' in page.locator('#plotsHeading').inner_text()
     assert page.locator('#forecastHorizonButtons').is_hidden()
     assert page.locator('#radarHistoryButtons').is_visible()
     assert page.locator('#toggleForecastRain').is_hidden()
