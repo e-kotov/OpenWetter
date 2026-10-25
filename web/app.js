@@ -438,9 +438,8 @@ function setMode(mode){
   dom.mapInstruction.textContent=mode==='radar'?
     'ACTUAL rainfall measurements, not predictions. Swipe for older scans · 2 fingers pan':
     'MODEL prediction, not radar. Swipe for later hours · 2 fingers pan';
-  dom.plotsHeading.textContent=mode==='radar'?'Forecast graphs · independent of past radar':
-    state.view==='compare'?'ICON model comparison · shared time':
-    mode==='continuous'?'Past ICON estimates + future forecasts · radar observations on map':'Forecast graphs · future model data';
+  dom.plotsHeading.textContent=state.view==='compare'?'ICON model comparison · shared time':
+    mode==='radar'||mode==='continuous'?'Past ICON estimates + future forecasts · radar observations on map':'Forecast graphs · future model data';
   updateReadouts();updateTimeUI();requestCursor();requestGraphs();requestMap();
   if(mode==='radar'||mode==='continuous'||state.showRain)void loadRadar();
 }
