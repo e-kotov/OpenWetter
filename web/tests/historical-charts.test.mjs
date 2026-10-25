@@ -38,3 +38,10 @@ test('series keeps historical and forecast rain separated and clips to chart bou
  assert.ok(plotted.past.every(p=>p.t<anchor));
  assert.ok(plotted.future.every(p=>p.t>=anchor));
 });
+
+test('current-hour ICON model value before wall-clock now appears on the past side',()=>{
+ const {past,forecast}=splitModelHistory(mock(),anchor);
+ const series=chartSeries(forecast,past,'temperature_2m',anchor-3600,anchor+2*3600,anchor+1200);
+ assert.deepEqual(series.past.map(p=>p.t),[anchor-3600,anchor]);
+ assert.deepEqual(series.future.map(p=>p.t),[anchor+3600,anchor+7200]);
+});
