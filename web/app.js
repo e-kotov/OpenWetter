@@ -978,7 +978,7 @@ function timeFromGraphPointer(event,body){
   if(state.mode==='continuous'){
     const frames=combinedFrames();if(frames.length)setContinuousIndex(nearestIndex(frames.map(f=>f.time),time));
   }else if(state.mode==='radar'){
-    if(time<=getRadarTime()||time<state.anchor){
+    if(time<Date.now()/1000||time<=state.radar?.frames?.at(-1)?.time){
       const times=timeList();if(times.length)setRadarIndex(radarWindowStart()+nearestIndex(times,time));
     }else{
       setMode('continuous');const frames=combinedFrames();
