@@ -86,6 +86,25 @@ Switch models using the existing top model selector to compare native D2 spatial
 
 The beta prereleases are built using the **permanent private signing key** provisioned by GitHub Actions and stored encrypted in this repository. Android will accept later higher-version release builds signed by the same certificate as in-place updates. The existing alpha.6 debug build has a different signing identity, so it requires a one-time uninstall before the first beta installation. Google Play Protect may still offer scans for GitHub-installed APKs.
 
+## Continuous radar-to-forecast playback (beta.5)
+
+Select **▶ Radar → forecast** above the map to play a single chronological
+sequence: the latest up-to-six-hours of genuinely observed DWD RADOLAN-RY
+five-minute scans followed by the available ICON-D2 15-minute or ICON-EU hourly
+precipitation forecast. The timeline explicitly labels observation and model
+time. Crossfades are display-only; no radar scan, weather value, or nowcast is
+invented. The outgoing map stays visible while the new source's pixels load.
+The separate forecast and historical-radar tabs remain available.
+
+The public DWD RY directory itself has more than six hours of history (it
+exposed approximately two days at verification); the six-hour limit is
+OpenWetter's deliberately bounded published cache, not a DWD restriction.
+The GitHub Actions radar-publishing schedule can be delayed unpredictably.
+When this occurs, OpenWetter keeps the original historical scans usable and
+shows a **STALE RADAR** indication rather than falsely treating old scans as
+real-time observations. A stale published scan is not evidence that DWD's
+original public radar feed is offline.
+
 ## Radar observation history and forecast separation
 
 The **Forecast · future** / **Radar · past 6h** switch at the top of the map selects two *independent* time axes. Forecast mode displays future DWD ICON precipitation/cloud model predictions (ICON-D2 ~2 km; optional ICON-EU rain ~7 km), not observations. Radar mode displays observed DWD RADOLAN RY rainfall intensity (1 km cells, 5-minute cadence), with a 2-hour or 6-hour history-window selector. Its selected timestamp is a real UTC observation time; no historical missing frames are fabricated. The forecast charts remain model predictions even when looking at radar history and are explicitly labelled as such. The radar source is distinct from the current satellite cloud observation.
