@@ -24,7 +24,7 @@ const fields=[
   'map','baseTiles','iconCanvas','iconTransitionCanvas','radarCanvas','radarTransitionCanvas','radarTiles','cloudTiles','toggleRain','toggleClouds',
   'toggleForecastRain','toggleForecastClouds',
   'mapPin','pinTemp','mapLayerName','mapModelName','modeContinuous','modeForecast','modeRadar','zoomIn','zoomOut',
-  'resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
+  'boundaryTransitionCanvas','resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
   'placesList','savePlace','cacheRadarBtn','cacheForecastBtn','cacheProgress','smoothFrames',
   'forecastHorizonButtons','radarHistoryButtons','radarHours2','radarHours6',
 ];
@@ -110,7 +110,27 @@ function fmt(v,metric){if(v==null)return '—';return metric==='precipitation'?v
 function metricValue(model,metric){return valueAtTime(state.forecasts[model],metric,state.selectedTime);}
 function combinedFrames(){const b=forecastBounds(state.anchor,state.horizon);return continuousWeatherTimeline(state.radar?.frames,{historyHours:state.radarHours,now:Date.now()/1000,start:state.iconGrid?.start??b.min,end:state.model==='icon_d2'?Math.min(b.max,state.iconGrid?.end??b.max):b.max,step:state.model==='icon_d2'?900:3600});}
 function combinedFrame(){const f=combinedFrames();return f[continuousCursorIndex(f,state.continuousCursor)]||null;}
-function setContinuousIndex(index){const frames=combinedFrames(),f=frames[clamp(Math.round(index),0,frames.length-1)];if(!f)return;state.continuousCursor=f;if(f.kind==='radar')state.radarIndex=nearestIndex(state.radar.frames.map(x=>x.time),f.time);else{state.selectedTime=f.time;updateReadouts();requestCursor();}updateTimeUI();updateOverlayUI();requestMap();}
+function setContinuousIndex(index){const frames=combinedFrames(),f=frames[clamp(Math.round(index),0,frames.length-1)];if(!f)return;
+  const previous=combinedFrame();if(state.mode==='continuous'&&previous&&previous.kind!==f.kind)beginBoundaryTransition(previous.kind,f.kind);
+  state.continuousCursor=f;if(f.kind==='radar')state.radarIndex=nearestIndex(state.radar.frames.map(x=>x.time),f.time);else{state.selectedTime=f.time;updateReadouts();requestCursor();}updateTimeUI();updateOverlayUI();requestMap();}
+let boundaryTarget=null,boundaryVersion=0;
+function beginBoundaryTransition(from,to){
+  const origin=from==='radar'?dom.radarCanvas:dom.iconCanvas,layer=dom.boundaryTransitionCanvas;
+  const w=origin.width,h=origin.height;
+  if(!w||!h){boundaryTarget=null;layer.hidden=true;return;}
+  boundaryTarget=to;boundaryVersion++;
+  layer.width=w;layer.height=h;
+  const c=layer.getContext('2d');c.clearRect(0,0,w,h);c.drawImage(origin,0,0);
+  layer.style.transition='none';layer.style.opacity=String(from==='radar'?state.radarOpacity:1);
+  layer.hidden=false;layer.dataset.fromSource=from;layer.dataset.toSource=to;
+}
+function completeBoundaryTransition(target){
+  if(boundaryTarget!==target)return;
+  const layer=dom.boundaryTransitionCanvas,version=++boundaryVersion;boundaryTarget=null;
+  if(!state.smoothFrames||window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){layer.hidden=true;return;}
+  requestAnimationFrame(()=>{if(version!==boundaryVersion)return;layer.style.transition='opacity 360ms linear';layer.style.opacity='0';});
+  setTimeout(()=>{if(version===boundaryVersion)layer.hidden=true;},400);
+}
 function timeBounds(){
   const b=forecastBounds(state.anchor,state.horizon);
   if(state.mode==='forecast' && state.model==='icon_d2' && state.iconGrid){
@@ -528,6 +548,7 @@ function drawShownRadar(ctx,width,height,ratio,map,resized){
     width,height,map.zoom,map,1);
   radarCanvasPaintKey=key;
   finish();
+  if(state.mode==='continuous'&&combinedFrame()?.kind==='radar'&&radarFrameShown.time===combinedFrame().time)completeBoundaryTransition('radar');
 }
 function prefetchRadarNearby(manifest,frameIndex){
   clearTimeout(radarPrefetchTimer);
@@ -610,6 +631,7 @@ async function paintD2SpatialViewport(ctx,model,time,width,height,zoom,map,gener
       paintIconSpatialTile(ctx,tile,field,time,width,height,zoom,map);
   }
   finish();
+  if(state.mode==='continuous'&&combinedFrame()?.kind==='forecast')completeBoundaryTransition('forecast');
   if(errors)showMessage(errors+' ICON-D2 regional tiles unavailable (partial map).',true);
 }
 async function paintNativeGrid(){
@@ -651,6 +673,7 @@ async function paintNativeGrid(){
         if(clouds)paintNativeField(iconCtx,model,clouds.data,'cloud',width,height,map.zoom,map,.58);
         if(rain)paintNativeField(iconCtx,model,rain.data,'precip',width,height,map.zoom,map,.87);
         finish();
+        if(state.mode==='continuous'&&combinedFrame()?.kind==='forecast')completeBoundaryTransition('forecast');
       }).catch(error=>showMessage('ICON-D2 map: '+error.message,true));
     }
   }else if((state.mode==='forecast'||state.mode==='continuous'&&combinedFrame()?.kind==='forecast')&&state.model==='icon_eu'&&
