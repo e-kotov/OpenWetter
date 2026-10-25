@@ -61,3 +61,7 @@ Browser UI tests use synthetic weather responses and do not prove mobile live da
 - Basemap tiles: [OpenStreetMap tile policy](https://operations.osmfoundation.org/policies/tiles/); no bulk tile prefetch or redistribution.
 
 Keep use of the data and map services within their individual terms. No service-account credentials or private signing material are stored in this repository.
+
+## Smooth radar scrubbing
+
+The radar renderer retains the last decoded image while another observed five-minute frame downloads (and labels the actual displayed timestamp during buffering). It processes only the visible geographic crop of the original-resolution radar rather than recolouring the entire country on every gesture, preloads adjacent frames, and limits rapid-gesture network requests. Radar precision and native observed timestamps are unchanged; slower connections can still delay *new* uncached frames.

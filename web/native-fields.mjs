@@ -2,12 +2,13 @@
  * Raster display pixel size oversamples the original ~2 km ICON mesh and 1 km
  * radar. It does NOT increase meteorological model resolution or fidelity.
  */
-import {mercator,nearestIndex} from './logic.mjs';
+import {mercator,unmercator,nearestIndex} from './logic.mjs';
 
 export const ICON_BASE='https://raw.githubusercontent.com/e-kotov/OpenWetter/icon-data/';
 export const RADAR_BASE='https://raw.githubusercontent.com/e-kotov/OpenWetter/radar-data/';
-const MAX_FRAMES=6;
-const cache=new Map();
+const MAX_ICON_FRAMES=7;
+const MAX_RADAR_FRAMES=8;
+const caches={icon:new Map(),radar:new Map()};
 const pending=new Map();
 const canvasCache=new WeakMap();
 
@@ -60,12 +61,23 @@ async function decompressGzip(response){
   if(!response.body || typeof DecompressionStream!=='function')throw new Error('This Android WebView requires gzip streaming support');
   return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
+/** Synchronous LRU lookup so scrubbing can display a cached frame in the same paint. */
+export function peekNativeFrame(manifest,field,timestamp){
+  const info=findRasterFile(manifest,field,timestamp);
+  if(!info)return null;
+  const cache=caches[manifest.kind];
+  if(!cache?.has(info.url))return null;
+  const values=cache.get(info.url);
+  cache.delete(info.url);cache.set(info.url,values);
+  return {...info,data:values};
+}
 export async function downloadNativeFrame(manifest,field,timestamp,{signal}={}){
   const info=findRasterFile(manifest,field,timestamp);
   if(!info)return null;
-  if(cache.has(info.url)){
-    const value=cache.get(info.url);cache.delete(info.url);cache.set(info.url,value);return {...info,data:value};
-  }
+  const cached=peekNativeFrame(manifest,field,timestamp);
+  if(cached)return cached;
+  const cache=caches[manifest.kind];
+  if(!cache)throw new Error('Unsupported native weather data type');
   if(!pending.has(info.url)){
     pending.set(info.url,(async()=>{
       const response=await fetch(info.url,{cache:'no-store',signal});
@@ -73,7 +85,8 @@ export async function downloadNativeFrame(manifest,field,timestamp,{signal}={}){
       if(bytes.byteLength!==info.count*info.bytesPerPixel)throw new Error('Truncated DWD raster frame');
       const values=info.bytesPerPixel===1?new Uint8Array(bytes):new Uint16Array(bytes);
       cache.set(info.url,values);
-      while(cache.size>MAX_FRAMES)cache.delete(cache.keys().next().value);
+      const max=manifest.kind==='radar'?MAX_RADAR_FRAMES:MAX_ICON_FRAMES;
+      while(cache.size>max)cache.delete(cache.keys().next().value);
       return values;
     })().finally(()=>pending.delete(info.url)));
   }
@@ -152,34 +165,73 @@ export function rgbaForField(field,raw){
   if(intensity<25)return [242,222,66,220];
   return [238,70,80,240];
 }
-export function paintNativeField(ctx,manifest,values,field,width,height,zoom,center,alpha=1){
-  if(!manifest||!values||!(width>0&&height>0))return;
-  let bitmap=canvasCache.get(values);
-  if(!bitmap){
-    const canvas=document.createElement('canvas');canvas.width=manifest.width;canvas.height=manifest.height;
-    const c=canvas.getContext('2d',{willReadFrequently:false}),pixels=c.createImageData(manifest.width,manifest.height);
-    const rgba=pixels.data;
-    for(let i=0;i<values.length;i++){
-      const value=rgbaForField(field,values[i]);
-      const j=i*4;rgba[j]=value[0];rgba[j+1]=value[1];rgba[j+2]=value[2];rgba[j+3]=value[3];
-    }
-    c.putImageData(pixels,0,0);
-    bitmap=canvas;canvasCache.set(values,bitmap);
+/** Convert the native-resolution pixels to a precomputed RGBA palette.
+ *  Recolour ONLY the geographic area currently on screen: processing the
+ *  entire 2401 x 1801 radar composite on every swipe causes long blank frames.
+ */
+const palettes=new Map();
+function pixelPalette(field){
+  if(palettes.has(field))return palettes.get(field);
+  const n=field==='cloud'?256:65536;
+  const palette=new Uint32Array(n);
+  for(let i=0;i<n;i++){
+    const [r,g,b,a]=rgbaForField(field,i);
+    palette[i]=(r|(g<<8)|(b<<16)|(a<<24))>>>0;
   }
+  palettes.set(field,palette);
+  return palette;
+}
+export function visibleNativeCrop(manifest,width,height,zoom,center){
+  if(!manifest || width<=0 || height<=0)return null;
   const [west,south,east,north]=manifest.bbox;
   const map=mercator(center.latitude,center.longitude,zoom);
-  const x=width/2 + mercator(0,west,zoom).x-map.x;
-  const w=mercator(0,east,zoom).x-mercator(0,west,zoom).x;
+  const nw=unmercator(map.x-width/2,map.y-height/2,zoom);
+  const se=unmercator(map.x+width/2,map.y+height/2,zoom);
+  // This dataset covers Germany, not the international date line.
+  if(nw.lon>se.lon || se.lon<west || nw.lon>east || nw.lat<south || se.lat>north)return null;
+  const left=Math.max(west,nw.lon),right=Math.min(east,se.lon);
+  const top=Math.min(north,nw.lat),bottom=Math.max(south,se.lat);
+  const c0=Math.max(0,Math.floor((left-west)/(east-west)*(manifest.width-1))-2);
+  const c1=Math.min(manifest.width-1,Math.ceil((right-west)/(east-west)*(manifest.width-1))+2);
+  const r0=Math.max(0,Math.floor((north-top)/(north-south)*(manifest.height-1))-2);
+  const r1=Math.min(manifest.height-1,Math.ceil((north-bottom)/(north-south)*(manifest.height-1))+2);
+  if(r1<r0||c1<c0)return null;
+  return {c0,c1,r0,r1,map,west,south,east,north};
+}
+export function paintNativeField(ctx,manifest,values,field,width,height,zoom,center,alpha=1){
+  if(!manifest||!values||!(width>0&&height>0))return;
+  const crop=visibleNativeCrop(manifest,width,height,zoom,center);
+  if(!crop)return;
+  const {c0,c1,r0,r1,map,west,south,east,north}=crop;
+  const cols=c1-c0+1,rows=r1-r0+1;
+  const cacheKey=`${field}:${c0}:${c1}:${r0}:${r1}`;
+  let retained=canvasCache.get(values);
+  if(!retained || retained.key!==cacheKey){
+    const canvas=document.createElement('canvas');canvas.width=cols;canvas.height=rows;
+    const c=canvas.getContext('2d');
+    const img=c.createImageData(cols,rows);
+    const colored=new Uint32Array(img.data.buffer),palette=pixelPalette(field);
+    for(let r=0;r<rows;r++){
+      const src=(r+r0)*manifest.width+c0,dst=r*cols;
+      for(let col=0;col<cols;col++)colored[dst+col]=palette[values[src+col]];
+    }
+    c.putImageData(img,0,0);
+    retained={key:cacheKey,canvas};
+    canvasCache.set(values,retained);
+  }
+  const srcCanvas=retained.canvas;
+  const leftLon=west+c0*(east-west)/(manifest.width-1);
+  const rightLon=west+(c1+1)*(east-west)/(manifest.width-1);
+  const x=width/2+mercator(0,leftLon,zoom).x-map.x;
+  const w=mercator(0,rightLon,zoom).x-mercator(0,leftLon,zoom).x;
   ctx.save();ctx.globalAlpha=alpha;ctx.imageSmoothingEnabled=false;
-  // Draw 2-5 latitude lines at a time; Mercator changes negligibly across a strip.
-  const strip=field==='radar'?5:3;
-  for(let row=0;row<manifest.height;row+=strip){
-    const end=Math.min(row+strip,manifest.height);
-    const latTop=north-row*(north-south)/(manifest.height-1);
-    const latBottom=north-end*(north-south)/(manifest.height-1);
+  for(let r=0;r<rows;r+=5){
+    const end=Math.min(r+5,rows);
+    const latTop=north-(r+r0)*(north-south)/(manifest.height-1);
+    const latBottom=north-(end+r0)*(north-south)/(manifest.height-1);
     const top=height/2+mercator(latTop,0,zoom).y-map.y;
     const bottom=height/2+mercator(latBottom,0,zoom).y-map.y;
-    ctx.drawImage(bitmap,0,row,manifest.width,end-row,x,top,w,bottom-top+.2);
+    ctx.drawImage(srcCanvas,0,r,cols,end-r,x,top,w,bottom-top+.2);
   }
   ctx.restore();
 }

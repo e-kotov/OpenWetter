@@ -54,6 +54,9 @@ BOOTSTRAP = r'''async (app64) => {
     }};
   };
   window.__mockCounts=()=>counters;
+  window.__delayRadarFrames=false;
+  const radarWaiters=[];
+  window.__releaseRadarFrames=()=>{window.__delayRadarFrames=false;while(radarWaiters.length)radarWaiters.shift()();};
   window.fetch=async (arg)=>{
     const url=String(arg);let body;
     if(url.includes('/v1/dwd-icon')){
@@ -69,6 +72,7 @@ BOOTSTRAP = r'''async (app64) => {
        body={schema:1,provider:'DWD',product:'RADOLAN-RY',bbox:[4,47,16,56],width:64,height:48,
          frames:Array.from({length:12},(_,i)=>({time:t-(11-i)*300,file:'frames/'+(t-(11-i)*300)+'.bin.gz'}))};
      }else if(url.includes('/radar-data/frames/')){
+       if(window.__delayRadarFrames)await new Promise(resolve=>radarWaiters.push(resolve));
        const array=new Uint16Array(64*48);array.fill(200);
        const gz=new Blob([array]).stream().pipeThrough(new CompressionStream('gzip'));
        return new Response(gz,{status:200,headers:{'Content-Type':'application/octet-stream'}});
@@ -271,9 +275,26 @@ def ui(kind,viewport,browser):
     # Historical radar is a separate, explicitly marked time axis.
     page.locator('#modeRadar').click()
     page.wait_for_function('openwetterTest.state.radar?.frames?.length===12')
-    page.wait_for_function('document.querySelector("#radarCanvas").width>0')
+    page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames.at(-1).time')
+    page.wait_for_function('''(()=>{
+       const canvas=document.querySelector('#radarCanvas');
+       const rgba=canvas.getContext('2d').getImageData(Math.floor(canvas.width/2),Math.floor(canvas.height/2),1,1).data;
+       return rgba[3]>0;
+    })()''')
     assert 'OBSERVED' in page.locator('#timeRange').inner_text()
+    # Delay an uncached radar frame. The old image must stay in place during scrubbing.
+    before=page.locator('#radarCanvas').evaluate('(canvas)=>canvas.toDataURL()')
+    page.evaluate('window.__delayRadarFrames=true')
     input_range(page,'#timeSlider',5)
+    assert state('radarIndex')==5
+    page.wait_for_timeout(240)
+    assert state('displayedRadarTime')!=state('radar.frames[5].time')
+    during=page.locator('#radarCanvas').evaluate('(canvas)=>canvas.toDataURL()')
+    assert before==during, 'Radar must not disappear while a new frame is in transit'
+    assert 'loading' in page.locator('#mapModelName').inner_text()
+    page.evaluate('window.__releaseRadarFrames()')
+    page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[5].time')
+    assert 'loading' not in page.locator('#mapModelName').inner_text()
     assert state('radarIndex')==5
     assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
     page.locator('#toggleRain').click()  # Radar history can also be switched off from the map.

@@ -5,7 +5,7 @@ import {
   mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
 } from './logic.mjs';
 import {fetchNativeManifest,downloadNativeFrame,downloadNativePointSeries,
-  paintNativeField,interpolatePointField} from './native-fields.mjs';
+  paintNativeField,interpolatePointField,peekNativeFrame} from './native-fields.mjs';
 
 const el=id=>document.getElementById(id);
 const fields=[
@@ -29,13 +29,16 @@ const state={
   horizontalHours:4,verticalHours:24,radarOpacity:.75,cloudOpacity:.5,showRain:false,showClouds:false,
   anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
   forecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
-  radar:null,radarIndex:0,playing:false,
+  radar:null,radarIndex:0,displayedRadarTime:null,playing:false,
   iconGrid:null,iconGridError:null,gridSeries:null,showForecastRain:true,showForecastClouds:false,
 };
 let fetchEpoch=0;
 const fetchControllers=new Map();
 let radarController=null,playTimer=null,mapRedrawRequest=0,graphRedrawRequest=0,forecastCursorRequest=0;
-let cloudWarningIssued=false,pointSeriesEpoch=0,drawEpoch=0;
+let cloudWarningIssued=false,pointSeriesEpoch=0,forecastPaintEpoch=0;
+let radarFrameShown=null,radarCanvasPaintKey='',radarRequestKey='',radarRequestController=null;
+let radarRequestTimer=null,radarPrefetchTimer=null,radarRequestSeq=0,radarPrefetchSeq=0;
+let radarPreviousIndex=null;
 const pointers=new Map();
 let drag=null;
 const FORECAST_MAX_AGE=45*60_000;
@@ -207,7 +210,7 @@ function setRadarIndex(index){
   if(!state.radar?.frames?.length)return;
   const next=clamp(Math.round(index),0,state.radar.frames.length-1);
   if(next===state.radarIndex)return;
-  state.radarIndex=next;updateTimeUI();requestMap();
+  state.radarIndex=next;updateTimeUI();updateOverlayUI();requestMap();
 }
 function timeList(){return state.radar?.frames?.map(f=>f.time)||[];}
 function setMode(mode){
@@ -240,7 +243,10 @@ function updateOverlayUI(){
     (realGrid?'ICON-D2 forecast · spatial grid':(observations.length?`Observed: ${observations.join(' + ')}`:'ICON forecast grid unavailable'));
   dom.radarAttribution.textContent=(visibleRain?' · Radar © DWD':'')+
     (state.showClouds?' · Satellite © DWD':'');
-  dom.mapModelName.textContent=state.mode==='radar'?'Radar history · independent timeline':
+  const shown=state.displayedRadarTime,selected=getRadarTime();
+  dom.mapModelName.textContent=state.mode==='radar'?
+    (shown==null?'Loading observed radar…':
+      `Showing ${formatTime(shown)}${selected!==shown?' · loading '+formatTime(selected):''}`):
     (realGrid?`DWD ICON ${state.iconGrid.run} · 0.0125° display raster`:(observations.length?'Observations do not follow ICON time':state.iconGridError?'Grids not yet published':`DWD ${MODELS[state.model].label}`));
 }
 function toggleObservation(which){
@@ -298,36 +304,111 @@ function toggleNativeLayer(field){
   else if(field==='cloud')state.showForecastClouds=!state.showForecastClouds;
   else return;updateOverlayUI();save();requestMap();
 }
+// Keep the currently painted pixels until the replacement frame has arrived.
+function prepareRasterCanvas(layer,width,height,ratio){
+  const pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
+  const resized=layer.width!==pixelWidth||layer.height!==pixelHeight;
+  if(resized){layer.width=pixelWidth;layer.height=pixelHeight;}
+  const ctx=layer.getContext('2d');
+  ctx.setTransform(ratio,0,0,ratio,0,0);
+  return {ctx,resized};
+}
+function drawShownRadar(ctx,width,height,ratio,map,resized){
+  if(!radarFrameShown)return;
+  const key=[radarFrameShown.time,radarFrameShown.manifest.generated_at||'',
+    width,height,ratio,map.latitude,map.longitude,map.zoom].join('|');
+  if(!resized&&radarCanvasPaintKey===key)return;
+  ctx.clearRect(0,0,width,height);
+  paintNativeField(ctx,radarFrameShown.manifest,radarFrameShown.data,'radar',
+    width,height,map.zoom,map,1);
+  radarCanvasPaintKey=key;
+}
+function prefetchRadarNearby(manifest,frameIndex){
+  clearTimeout(radarPrefetchTimer);
+  const serial=++radarPrefetchSeq;
+  radarPrefetchTimer=setTimeout(()=>{
+    if(serial!==radarPrefetchSeq||manifest!==state.radar)return;
+    const direction=radarPreviousIndex==null||frameIndex<=radarPreviousIndex?-1:1;
+    radarPreviousIndex=frameIndex;
+    const choices=[frameIndex+direction,frameIndex-direction,frameIndex+direction*2];
+    void (async()=>{
+      for(const index of choices){
+        if(serial!==radarPrefetchSeq||manifest!==state.radar||
+          (state.mode!=='radar'&&!state.showRain))return;
+        const frame=manifest.frames[index];if(!frame)continue;
+        try{await downloadNativeFrame(manifest,'radar',frame.time);}catch{/* Radar prefetch is optional. */}
+      }
+    })();
+  },140);
+}
+function requestRadarFrame(manifest,time){
+  if(time==null)return;
+  const key=(manifest.generated_at||'')+':'+time;
+  if(radarRequestKey===key)return;
+  if(radarRequestTimer){clearTimeout(radarRequestTimer);radarRequestTimer=null;}
+  radarRequestController?.abort();
+  clearTimeout(radarPrefetchTimer);radarPrefetchSeq++;
+  radarRequestKey=key;
+  const serial=++radarRequestSeq,controller=new AbortController();
+  radarRequestController=controller;
+  // During a gesture fetch only the frame at which the finger currently rests.
+  // Otherwise rapid scrubs queue dozens of multi-megabyte downloads.
+  radarRequestTimer=setTimeout(()=>{
+    radarRequestTimer=null;
+    void downloadNativeFrame(manifest,'radar',time,{signal:controller.signal})
+      .then(frame=>{
+        if(serial!==radarRequestSeq||controller.signal.aborted||!frame||
+           manifest!==state.radar||getRadarTime()!==time||
+           (state.mode!=='radar'&&!state.showRain))return;
+        radarFrameShown={...frame,manifest};
+        state.displayedRadarTime=frame.time;
+        radarCanvasPaintKey='';
+        requestMap();
+        prefetchRadarNearby(manifest,frame.index);
+      })
+      .catch(error=>{
+        if(serial===radarRequestSeq&&!controller.signal.aborted)
+          showMessage('DWD radar frame unavailable: '+error.message,true);
+      });
+  },70);
+}
 async function paintNativeGrid(){
-  const canvas=dom.iconCanvas,radar=dom.radarCanvas,rect=dom.map.getBoundingClientRect();
+  const rect=dom.map.getBoundingClientRect();
   if(!rect.width||!rect.height)return;
   const width=rect.width,height=rect.height,ratio=Math.min(2.5,window.devicePixelRatio||1);
-  for(const layer of [canvas,radar]){
-    layer.width=Math.round(width*ratio);layer.height=Math.round(height*ratio);
-    const ctx=layer.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height);
-  }
-  const generation=++drawEpoch,model=state.iconGrid,time=state.selectedTime,map={...state.map};
+  const {ctx:iconCtx}=prepareRasterCanvas(dom.iconCanvas,width,height,ratio);
+  const {ctx:radarCtx,resized:radarResized}=prepareRasterCanvas(dom.radarCanvas,width,height,ratio);
+  const generation=++forecastPaintEpoch,model=state.iconGrid,time=state.selectedTime,map={...state.map};
   if(state.mode==='forecast'&&state.model==='icon_d2'&&model&&(state.showForecastRain||state.showForecastClouds)){
-    const results=await Promise.allSettled([
+    // Keep the previous forecast visible while the next 15-minute field loads.
+    void Promise.allSettled([
       state.showForecastClouds?downloadNativeFrame(model,'cloud',time):Promise.resolve(null),
       state.showForecastRain?downloadNativeFrame(model,'precip',time):Promise.resolve(null)
-    ]);
-    if(generation!==drawEpoch)return;
-    const ctx=canvas.getContext('2d');
-    const clouds=results[0].status==='fulfilled'?results[0].value:null;
-    const rain=results[1].status==='fulfilled'?results[1].value:null;
-    if(clouds)paintNativeField(ctx,model,clouds.data,'cloud',width,height,map.zoom,map,.58);
-    if(rain)paintNativeField(ctx,model,rain.data,'precip',width,height,map.zoom,map,.87);
-    if(state.showForecastRain)for(const dt of [-900,900])void downloadNativeFrame(model,'precip',time+dt).catch(()=>{});
-  }
+    ]).then(results=>{
+      if(generation!==forecastPaintEpoch)return;
+      const clouds=results[0].status==='fulfilled'?results[0].value:null;
+      const rain=results[1].status==='fulfilled'?results[1].value:null;
+      if(!clouds&&!rain)return;
+      iconCtx.clearRect(0,0,width,height);
+      if(clouds)paintNativeField(iconCtx,model,clouds.data,'cloud',width,height,map.zoom,map,.58);
+      if(rain)paintNativeField(iconCtx,model,rain.data,'precip',width,height,map.zoom,map,.87);
+      if(state.showForecastRain)for(const dt of [-900,900])
+        void downloadNativeFrame(model,'precip',time+dt).catch(()=>{});
+    }).catch(error=>showMessage('ICON map frame: '+error.message,true));
+  }else iconCtx.clearRect(0,0,width,height);
   if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
-    const frameTime=state.radar.frames[state.radarIndex]?.time;
-    try{
-      const observed=await downloadNativeFrame(state.radar,'radar',frameTime);
-      if(generation!==drawEpoch)return;
-      if(observed)paintNativeField(radar.getContext('2d'),state.radar,observed.data,'radar',
-        width,height,map.zoom,map,1);
-    }catch(error){if(generation===drawEpoch)showMessage('DWD radar frame: '+error.message,true);}
+    const manifest=state.radar,frameTime=manifest.frames[state.radarIndex]?.time;
+    const inCache=peekNativeFrame(manifest,'radar',frameTime);
+    if(inCache&&(radarFrameShown?.time!==inCache.time||radarFrameShown?.manifest!==manifest)){
+      radarFrameShown={...inCache,manifest};
+      state.displayedRadarTime=inCache.time;
+      radarCanvasPaintKey='';
+      prefetchRadarNearby(manifest,inCache.index);
+    }
+    drawShownRadar(radarCtx,width,height,ratio,map,radarResized);
+    if(frameTime!=null&&(!radarFrameShown||radarFrameShown.time!==frameTime||
+         radarFrameShown.manifest!==manifest))requestRadarFrame(manifest,frameTime);
+    updateOverlayUI();
   }
 }
 function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}

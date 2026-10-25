@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {parseNativeManifest,findRasterFile,gridPixel,parsePointSeries,rgbaForField,interpolatePointField} from '../native-fields.mjs';
+import {parseNativeManifest,findRasterFile,gridPixel,parsePointSeries,rgbaForField,interpolatePointField,visibleNativeCrop,peekNativeFrame} from '../native-fields.mjs';
 const start=1792908000;
 const icon=parseNativeManifest({schema:2,provider:'DWD',model:'ICON-D2',run:'2026-10-25T06:00',bbox:[4,47,16,56],width:961,height:721,
  start,end:start+48*3600,precipitation:{interval_minutes:15,count:193,path:'frames/precip/{index:03d}.bin.gz'},
@@ -46,4 +46,14 @@ test('precipitation and observed radar use physically different intensity scalin
 });
 test('wind values interpolate from DWD model point data without new weather generation',()=>{
  assert.equal(interpolatePointField({time:[start,start+3600],wind_speed_10m:[10,20]},'wind_speed_10m',start+900),12.5);
+});
+
+test('native radar crops large images to the visible viewport instead of recolouring whole country',()=>{
+  const large={...radar,width:2401,height:1801,bbox:[4,47,16,56]};
+  const crop=visibleNativeCrop(large,390,280,7,{latitude:51.51,longitude:7.46});
+  assert.ok(crop,'The German radar rectangle must intersect Dortmund');
+  const count=(crop.r1-crop.r0+1)*(crop.c1-crop.c0+1);
+  assert.ok(count<large.width*large.height/2,'Offscreen radar pixels are not converted to RGBA');
+  assert.ok(crop.c0>=0&&crop.c1<large.width&&crop.r0>=0&&crop.r1<large.height);
+  assert.equal(peekNativeFrame(large,'radar',start),null);
 });
