@@ -22,6 +22,7 @@ NATIVE = (ROOT/'native-fields.mjs').read_text()
 SPATIAL = (ROOT/'spatial-icon.mjs').read_text()
 WMS_EU = (ROOT/'wms-eu.mjs').read_text()
 TRANSITION = (ROOT/'frame-transition.mjs').read_text()
+CONTINUOUS = (ROOT/'continuous-timeline.mjs').read_text()
 FRAME_CACHE = (ROOT/'frame-cache.mjs').read_text()
 frame_cache_url = 'data:text/javascript;base64,'+base64.b64encode(FRAME_CACHE.encode()).decode()
 GRID = GRID.replace("from './logic.mjs'", f"from '{logic_url}'")
@@ -35,12 +36,14 @@ WMS_EU = WMS_EU.replace("from './logic.mjs'", f"from '{logic_url}'")
 WMS_EU = WMS_EU.replace("from './frame-cache.mjs'", f"from '{frame_cache_url}'")
 wms_url = 'data:text/javascript;base64,'+base64.b64encode(WMS_EU.encode()).decode()
 transition_url = 'data:text/javascript;base64,'+base64.b64encode(TRANSITION.encode()).decode()
+continuous_url = 'data:text/javascript;base64,'+base64.b64encode(CONTINUOUS.encode()).decode()
 APP = APP.replace("from './logic.mjs'", f"from '{logic_url}'")
 APP = APP.replace("from './icon-grid.mjs'", f"from '{grid_url}'")
 APP = APP.replace("from './native-fields.mjs'", f"from '{native_url}'")
 APP = APP.replace("from './spatial-icon.mjs'", f"from '{spatial_url}'")
 APP = APP.replace("from './wms-eu.mjs'", f"from '{wms_url}'")
 APP = APP.replace("from './frame-transition.mjs'", f"from '{transition_url}'")
+APP = APP.replace("from './continuous-timeline.mjs'", f"from '{continuous_url}'")
 APP = APP.replace("if(new URLSearchParams(location.search).has('test'))window.openwetterTest=", "window.openwetterTest=")
 APP_B64 = base64.b64encode(APP.encode()).decode()
 HTML = HTML.replace('<link rel="stylesheet" href="styles.css"/>', '<style>'+CSS+'</style>')
@@ -422,6 +425,30 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[0].time')
     assert page.evaluate('(url)=>window.__mockCounts().radarFiles[url]||0',oldest_url)==1,'Previously viewed radar frame was downloaded twice'
     assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
+    # Restore smooth animation after the earlier explicit reduced-animation test.
+    page.locator('#settingsBtn').click()
+    page.locator('#smoothFrames').check()
+    page.locator('#settingsBtn').click()
+    # New continuous playback keeps true observations before forecasts and blends the source boundary.
+    page.locator('#modeContinuous').click()
+    assert state('mode')=='continuous'
+    assert page.locator('#modeContinuous').get_attribute('aria-pressed')=='true'
+    combined=page.evaluate('openwetterTest.combinedFrames()')
+    assert combined and combined[0]['kind']=='radar'
+    assert combined[-1]['kind']=='forecast'
+    assert all(combined[i]['time']<combined[i+1]['time'] for i in range(len(combined)-1))
+    assert 'OBSERVED RADAR' in page.locator('#timeRange').inner_text()
+    first_forecast=next(i for i,frame in enumerate(combined) if frame['kind']=='forecast')
+    input_range(page,'#timeSlider',first_forecast)
+    assert 'ICON FORECAST' in page.locator('#timeRange').inner_text()
+    assert state('continuousCursor.kind')=='forecast'
+    assert page.locator('#boundaryTransitionCanvas').get_attribute('data-from-source')=='radar'
+    assert page.locator('#boundaryTransitionCanvas').get_attribute('data-to-source')=='forecast'
+    page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
+    input_range(page,'#timeSlider',first_forecast-1)
+    assert state('continuousCursor.kind')=='radar'
+    page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
+    page.wait_for_timeout(450)
     page.locator('#modeForecast').click()  # Explicitly switch back to future model predictions.
     assert state('mode')=='forecast'
     assert page.locator('#forecastHorizonButtons').is_visible()
