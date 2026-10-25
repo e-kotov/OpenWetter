@@ -1024,7 +1024,12 @@ function wireMapGestures(){
         drag.axis??=pickGestureAxis(dx,dy);
         if(drag.axis){
           stopPlay();
-          if(state.mode==='radar'){
+          if(state.mode==='continuous'){
+            const direction=drag.axis==='vertical'?-dy:dx;
+            const speed=drag.axis==='vertical'?state.verticalHours:state.horizontalHours;
+            const step=Math.round(direction*speed/100*4);
+            setContinuousIndex(drag.startContinuousIndex+step);
+          }else if(state.mode==='radar'){
             const t=radarSwipeTimestamp(drag.startTime,dx,dy,drag.axis);
             setRadarIndex(nearestIndex(timeList(),t));
           }else{
@@ -1136,8 +1141,8 @@ function wire(){
   window.addEventListener('keydown',event=>{
     if(event.key==='Escape'){closeDrawer();dom.settingsPanel.hidden=true;dom.settingsBtn.setAttribute('aria-expanded','false');}
     if(event.target.matches('input,button,select,textarea'))return;
-    if(event.key==='ArrowRight'){stopPlay();state.mode==='radar'?setRadarIndex(state.radarIndex+1):setSelectedTime(state.selectedTime+timelineStep());}
-    if(event.key==='ArrowLeft'){stopPlay();state.mode==='radar'?setRadarIndex(state.radarIndex-1):setSelectedTime(state.selectedTime-timelineStep());}
+    if(event.key==='ArrowRight'){stopPlay();state.mode==='continuous'?setContinuousIndex(continuousCursorIndex(combinedFrames(),state.continuousCursor)+1):state.mode==='radar'?setRadarIndex(state.radarIndex+1):setSelectedTime(state.selectedTime+timelineStep());}
+    if(event.key==='ArrowLeft'){stopPlay();state.mode==='continuous'?setContinuousIndex(continuousCursorIndex(combinedFrames(),state.continuousCursor)-1):state.mode==='radar'?setRadarIndex(state.radarIndex-1):setSelectedTime(state.selectedTime-timelineStep());}
   });
   window.addEventListener('resize',()=>{requestGraphs();requestMap();});
   if('ResizeObserver' in window)new ResizeObserver(()=>{requestGraphs();requestMap();}).observe(dom.graphStack);
