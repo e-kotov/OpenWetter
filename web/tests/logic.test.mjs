@@ -4,6 +4,7 @@ import {
   MODELS, MODEL_IDS, forecastURL, parseForecast, nearestIndex, valueAtTime,
   axisLimits, hourFloor, pickGestureAxis, scrubTimestamp, forecastBounds,
   timelinePosition, placeKey, mercator, unmercator, radarTileURL, safeRadarMetadata,
+  radarHistoryStartIndex,
   DWD_SATELLITE_CLOUDS, dwdWmsTileURL,
 } from '../logic.mjs';
 
@@ -111,4 +112,16 @@ test('Meteosat overlay requests DWD transparent WMS tiles with correct Web-Merca
                dwdWmsTileURL(DWD_SATELLITE_CLOUDS,4,16,2));
   assert.throws(()=>dwdWmsTileURL('dwd:OtherLayer',4,1,1),/Unsupported/);
   assert.throws(()=>dwdWmsTileURL(DWD_SATELLITE_CLOUDS,4,1,-1),/Invalid/);
+});
+
+test('DWD radar timeline offers six real hours and a two-hour focus window without inventing frames',()=>{
+  const latest=1792942200,frames=Array.from({length:73},(_,i)=>({time:latest-360*60+i*300}));
+  assert.equal(radarHistoryStartIndex(frames,6),0);
+  assert.equal(radarHistoryStartIndex(frames,2),48);
+  assert.equal(frames.length,73);
+  assert.equal(frames.at(-1).time-frames[0].time,6*3600);
+  assert.equal(radarHistoryStartIndex([],6),0);
+  const withGap=frames.filter((_,i)=>i!==50&&i!==51);
+  assert.equal(withGap[radarHistoryStartIndex(withGap,2)].time,latest-2*3600);
+  assert.throws(()=>radarHistoryStartIndex(frames,0),RangeError);
 });

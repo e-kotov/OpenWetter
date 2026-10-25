@@ -42,8 +42,9 @@
     </div>
     <div class="summary-values" id="summaryValues" aria-label="Selected time weather values"><span>Rain <b id="quickRain">—</b></span><span>Wind <b id="quickWind">—</b></span><span>Cloud <b id="quickCloud">—</b></span></div>
     <div id="message" class="message" role="status" aria-live="polite"></div>
-    <div class="plot-toolbar"><strong id="plotsHeading">Forecast layers</strong>
-      <div class="horizon-buttons" role="group" aria-label="Time span"><button id="horizon48" class="horizon active" aria-pressed="true">48h</button><button id="horizon120" class="horizon" aria-pressed="false">5 days</button></div>
+    <div class="plot-toolbar"><strong id="plotsHeading">Forecast graphs · future model data</strong>
+      <div id="forecastHorizonButtons" class="horizon-buttons" role="group" aria-label="Future forecast horizon"><button id="horizon48" class="horizon active" aria-pressed="true">48h</button><button id="horizon120" class="horizon" aria-pressed="false">5 days</button></div>
+      <div id="radarHistoryButtons" class="horizon-buttons" role="group" aria-label="Past observed radar history" hidden><button id="radarHours2" class="horizon" aria-pressed="false">Past 2h</button><button id="radarHours6" class="horizon active" aria-pressed="true">Past 6h</button></div>
     </div>
     <div id="graphStack" class="graph-stack" aria-label="Synchronized weather graphs"></div>
     <div class="timeline">
@@ -65,7 +66,7 @@
       <label for="cloudOpacitySlider">Cloud transparency <output id="cloudOpacityOutput">50%</output></label>
       <input id="cloudOpacitySlider" type="range" min="10" max="100" step="5" value="50" />
       <div class="setting-title"><strong>Offline weather cache</strong><span>Download once, scrub without repeated transfers</span></div>
-      <button id="cacheRadarBtn" type="button" class="overlay-btn cache-download">Cache 2 h radar history (~14 MB)</button>
+      <button id="cacheRadarBtn" type="button" class="overlay-btn cache-download">Cache 6 h observed radar (~40 MB)</button>
       <button id="cacheForecastBtn" type="button" class="overlay-btn cache-download">Cache visible ICON-D2 area (48 h)</button>
       <p id="cacheProgress" class="cache-progress" role="status" aria-live="polite">Choose a cache download on Wi-Fi. Radar and forecast maps are also saved automatically as you view them.</p>
     </div>
@@ -74,15 +75,15 @@
 
   <section id="map" class="map" aria-label="Weather map: swipe right or up to move forward in time; two fingers to pan or zoom">
     <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><canvas id="iconCanvas" class="icon-grid-layer" aria-label="Genuine DWD ICON-D2 rain/cloud and ICON-EU precipitation forecast maps"></canvas><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><div id="radarTiles" class="tiles radar-tiles" hidden></div><canvas id="radarCanvas" class="icon-grid-layer radar-canvas" aria-label="DWD radar rain observations at 1 km resolution"></canvas><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
-    <div class="map-label"><span class="map-dot"></span><span id="mapLayerName">Forecast point</span><small id="mapModelName">DWD ICON-D2</small></div>
-    <div class="map-mode" role="group" aria-label="Timeline mode"><button id="modeForecast" class="mode-btn active" aria-pressed="true">Forecast point</button><button id="modeRadar" class="mode-btn" aria-pressed="false">Radar history</button></div>
+    <div class="map-label"><span class="map-dot"></span><span id="mapLayerName">FORECAST · model prediction</span><small id="mapModelName">Predicted by DWD ICON-D2</small></div>
+    <div class="map-mode" role="group" aria-label="Timeline mode"><button id="modeForecast" class="mode-btn active" aria-pressed="true">◈ Forecast · future</button><button id="modeRadar" class="mode-btn" aria-pressed="false">◉ Radar · past 6h</button></div>
     <div class="map-overlays native-overlays" role="group" aria-label="Time-changing DWD ICON-D2 and ICON-EU forecast map layers">
       <button id="toggleForecastRain" class="overlay-btn" aria-pressed="true">🌧 ICON rain forecast</button>
       <button id="toggleForecastClouds" class="overlay-btn" aria-pressed="false">☁ ICON cloud forecast</button>
     </div>
     <div class="map-overlays observations-overlays" role="group" aria-label="Live observed map overlays">
-      <button id="toggleRain" class="overlay-btn" aria-pressed="false" title="Show latest observed rain radar, independent of forecast time">☔ Rain radar</button>
-      <button id="toggleClouds" class="overlay-btn" aria-pressed="false" title="Show current Meteosat satellite clouds, independent of forecast time">☁ Satellite clouds</button>
+      <button id="toggleRain" class="overlay-btn" aria-pressed="false" title="Overlay latest observed rain radar (not related to selected future forecast time)">📡 Latest radar · observed</button>
+      <button id="toggleClouds" class="overlay-btn" aria-pressed="false" title="Show actual satellite cloud observations (not forecast)">☁ Satellite · observed</button>
     </div>
     <div class="map-controls"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button><button id="resetView" aria-label="Recenter map">◎</button></div>
     <div id="mapInstruction" class="map-instruction">Swipe ↔ slowly / ↕ quickly · two fingers to move map</div>

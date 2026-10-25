@@ -1,4 +1,4 @@
-"""Publish genuine DWD RADOLAN RY 1 km / 5 minute observed rain frames.
+"""Publish six hours of genuine DWD RADOLAN RY 1 km / 5-minute observed rain frames.
 
 Input: official ODIM-HDF5 RY files, quantity RATE, gain 0.01 mm/h.
 The native 1km radar values are sampled onto 0.005-degree pixels (oversampling,
@@ -23,7 +23,7 @@ URL='https://opendata.dwd.de/weather/radar/radolan/ry/'
 WEST,EAST,SOUTH,NORTH=4.,16.,47.,56.
 STEP=.005
 WIDTH,HEIGHT=2401,1801
-KEEP=24
+KEEP=73  # 6 hours of history at 5-minute resolution, including both endpoints
 
 class Links(HTMLParser):
     def __init__(self):super().__init__();self.hrefs=[]
@@ -46,7 +46,7 @@ def observations():
         entries.append((int(t.timestamp()),fn))
     entries.sort()
     if not entries:raise RuntimeError('DWD RY directory contains no timed frames')
-    return entries[-KEEP:]
+    return entries[-KEEP:]  # bounded even when DWD exposes several days of history
 
 def metadata_and_values(binary):
     with h5py.File(io.BytesIO(binary),'r') as f:
@@ -121,7 +121,8 @@ def build(directory='radar-data'):
         'bbox':[WEST,SOUTH,EAST,NORTH], 'width':WIDTH,'height':HEIGHT,
         'encoding':'uint16-le', 'gain':.01,'nodata':65535,
         'generated_at':datetime.now(timezone.utc).isoformat(),
-        'latest_age_seconds':age,'frames':manifest_frames,
+        'latest_age_seconds':age,'history_hours':round((manifest_frames[-1]['time']-manifest_frames[0]['time'])/3600,3),
+        'cadence_minutes':5,'target_hours':6,'frames':manifest_frames,
     }
     (dest/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('Published',len(manifest_frames),'genuine DWD 5-minute radar records',

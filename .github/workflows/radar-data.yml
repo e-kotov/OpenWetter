@@ -23,6 +23,8 @@ jobs:
           python-version: '3.12'
       - name: Install HDF5 radar and projection libraries
         run: python -m pip install numpy h5py pyproj
+      - name: Verify genuine six-hour radar time-window retention
+        run: python tools/test_radar_history.py
       - name: Reuse previously processed radar frames
         env:
           GH_TOKEN: ${{ github.token }}

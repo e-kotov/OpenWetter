@@ -2,7 +2,7 @@
  * Android WebView disables the service worker, so CacheStorage is used directly.
  * No basemap bulk downloads, private values, API keys or credentials are stored.
  */
-const DEFAULT_LIMITS=Object.freeze({radar:30,icon:315,series:22,wms:360});
+const DEFAULT_LIMITS=Object.freeze({radar:90,icon:315,series:22,wms:360});
 const MAX_FILE_BYTES=16*1024*1024;
 
 export function createPersistentWeatherCache({
@@ -47,7 +47,7 @@ export function createPersistentWeatherCache({
       }}));
       const keys=await cache.keys();
       // One complete 48-hour ICON-D2 cycle (291 map frames) fits at once.
-      // Radar retains all 24 observed frames plus a little headroom.
+      // Radar retains six hours (73 5-minute frames) plus space for new scans.
       for(const req of keys.slice(0,Math.max(0,keys.length-maxEntries[kind])))
         await cache.delete(req);
       return true;

@@ -341,8 +341,21 @@ def ui(kind,viewport,browser):
     assert page.locator('#toggleRain').get_attribute('aria-pressed')=='false'
     page.wait_for_function('document.querySelector("#radarCanvas").hidden')
 
-    # Historical radar is a separate, explicitly marked time axis.
+    # Radar and forecast are explicitly separate: observation history has
+    # its own time controls, while forecasts retain their future window.
     page.locator('#modeRadar').click()
+    assert 'OBSERVED RADAR' in page.locator('#mapLayerName').inner_text()
+    assert 'Forecast graphs' in page.locator('#plotsHeading').inner_text()
+    assert page.locator('#forecastHorizonButtons').is_hidden()
+    assert page.locator('#radarHistoryButtons').is_visible()
+    assert page.locator('#toggleForecastRain').is_hidden()
+    assert page.locator('#toggleRain').is_hidden()
+    assert 'Radar · past 6h' in page.locator('#modeRadar').inner_text()
+    page.locator('#radarHours2').click()
+    assert state('radarHours')==2
+    assert 'Radar · past 2h' in page.locator('#modeRadar').inner_text()
+    page.locator('#radarHours6').click()
+    assert state('radarHours')==6
     page.wait_for_function('openwetterTest.state.radar?.frames?.length===12')
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames.at(-1).time')
     page.wait_for_function('''(()=>{
@@ -380,8 +393,11 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[0].time')
     assert page.evaluate('(url)=>window.__mockCounts().radarFiles[url]||0',oldest_url)==1,'Previously viewed radar frame was downloaded twice'
     assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
-    page.locator('#toggleRain').click()  # Radar history can also be switched off from the map.
+    page.locator('#modeForecast').click()  # Explicitly switch back to future model predictions.
     assert state('mode')=='forecast'
+    assert page.locator('#forecastHorizonButtons').is_visible()
+    assert page.locator('#radarHistoryButtons').is_hidden()
+    assert 'FORECAST' in page.locator('#mapLayerName').inner_text()
     page.wait_for_function('document.querySelector("#radarCanvas").hidden')
     page.locator('#modelSelect').select_option('icon_d2')
     page.locator('#horizon48').click()

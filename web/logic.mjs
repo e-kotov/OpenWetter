@@ -37,6 +37,17 @@ export function parseForecast(data) {
   for(const {key} of Object.values(VARIABLES))if(!Array.isArray(data.hourly[key])||data.hourly[key].length!==times.length)throw new Error(`Missing ${key} data`);
   return data;
 }
+/** First index of the most recent observed radar history window.
+ * Manifest entries are sorted by UTC observation time, not a nominal
+ * number of 5-minute positions: missing radar scans are not fabricated.
+ */
+export function radarHistoryStartIndex(frames,hours=6){
+  if(!Array.isArray(frames)||!frames.length)return 0;
+  if(!Number.isFinite(hours)||hours<=0)throw new RangeError('Invalid radar history length');
+  const end=frames.at(-1).time,bound=end-hours*3600;
+  const first=frames.findIndex(f=>f.time>=bound);
+  return first<0?frames.length-1:first;
+}
 export function nearestIndex(timestamps,targetSeconds) {
   if(!timestamps?.length)return -1;
   let lo=0,hi=timestamps.length-1;
