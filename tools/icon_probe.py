@@ -39,8 +39,14 @@ def probe(variable):
     print(variable,'run entries',len(names),'examples',names[:12],flush=True)
     candidates=[n for n in names if n.lower().endswith(('.grib2','.grb2','.grib','.grb2.bz2','.grib2.bz2'))]
     if not candidates:
-        print(variable,'no GRIB direct, subdirs', [n for n in names if n.endswith('/')][:15],flush=True)
-        return
+        subdirs=[n for n in names if n.endswith('/')]
+        print(variable,'subdirs', subdirs[:15],flush=True)
+        if not subdirs:return
+        url=urljoin(url,subdirs[0])
+        names=listing(url)
+        print(variable,'nested entries',len(names),'examples',names[:15],flush=True)
+        candidates=[n for n in names if n.lower().endswith(('.grib2','.grb2','.grib','.grb2.bz2','.grib2.bz2'))]
+        if not candidates:return
     chosen=candidates[min(1,len(candidates)-1)]
     url=urljoin(url,chosen)
     print(variable,'fetch',url,flush=True)
