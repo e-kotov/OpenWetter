@@ -18,10 +18,14 @@ LOGIC = (ROOT/'logic.mjs').read_text()
 APP = (ROOT/'app.js').read_text()
 logic_url = 'data:text/javascript;base64,'+base64.b64encode(LOGIC.encode()).decode()
 GRID = (ROOT/'icon-grid.mjs').read_text()
+NATIVE = (ROOT/'native-fields.mjs').read_text()
 GRID = GRID.replace("from './logic.mjs'", f"from '{logic_url}'")
 grid_url = 'data:text/javascript;base64,'+base64.b64encode(GRID.encode()).decode()
+NATIVE = NATIVE.replace("from './logic.mjs'", f"from '{logic_url}'")
+native_url = 'data:text/javascript;base64,'+base64.b64encode(NATIVE.encode()).decode()
 APP = APP.replace("from './logic.mjs'", f"from '{logic_url}'")
 APP = APP.replace("from './icon-grid.mjs'", f"from '{grid_url}'")
+APP = APP.replace("from './native-fields.mjs'", f"from '{native_url}'")
 APP = APP.replace("if(new URLSearchParams(location.search).has('test'))window.openwetterTest=", "window.openwetterTest=")
 APP_B64 = base64.b64encode(APP.encode()).decode()
 HTML = HTML.replace('<link rel="stylesheet" href="styles.css"/>', '<style>'+CSS+'</style>')
@@ -58,9 +62,16 @@ BOOTSTRAP = r'''async (app64) => {
       body=forecast(url);
     }else if(url.includes('geocoding-api.open-meteo.com')){
       counters.geocode++;body={results:[{latitude:50.7374,longitude:7.0982,name:'Bonn',country:'Germany'}]};
-    }else if(url.includes('weather-maps.json')){
-      counters.radar++;const t=Math.floor(Date.now()/600000)*600;
-      body={host:'https://tilecache.rainviewer.com',radar:{past:Array.from({length:12},(_,i)=>({time:t-(11-i)*600,path:'/v2/radar/'+(t-(11-i)*600)}))}};
+    }else if(url.includes('/icon-data/manifest.json')){
+       return new Response('Test offline ICON dataset',{status:404});
+     }else if(url.includes('/radar-data/manifest.json')){
+       counters.radar++;const t=Math.floor(Date.now()/300000)*300;
+       body={schema:1,provider:'DWD',product:'RADOLAN-RY',bbox:[4,47,16,56],width:64,height:48,
+         frames:Array.from({length:12},(_,i)=>({time:t-(11-i)*300,file:'frames/'+(t-(11-i)*300)+'.bin.gz'}))};
+     }else if(url.includes('/radar-data/frames/')){
+       const array=new Uint16Array(64*48);array.fill(200);
+       const gz=new Blob([array]).stream().pipeThrough(new CompressionStream('gzip'));
+       return new Response(gz,{status:200,headers:{'Content-Type':'application/octet-stream'}});
     }else throw new Error('Unexpected request: '+url);
     return new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}});
   };
@@ -249,25 +260,25 @@ def ui(kind,viewport,browser):
     page.wait_for_function('document.querySelectorAll("#cloudTiles img").length===0')
     page.locator('#toggleRain').click()
     assert page.locator('#toggleRain').get_attribute('aria-pressed')=='true'
-    page.wait_for_function('document.querySelectorAll("#radarTiles img").length>0')
-    assert 'RainViewer' in page.locator('#radarAttribution').inner_text()
+    page.wait_for_function('document.querySelector("#radarCanvas").width>0')
+    assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
     assert 'Observations do not follow ICON time' in page.locator('#mapModelName').inner_text()
     assert state('selectedTime')==previous_time
     page.locator('#toggleRain').click()
     assert page.locator('#toggleRain').get_attribute('aria-pressed')=='false'
-    page.wait_for_function('document.querySelectorAll("#radarTiles img").length===0')
+    page.wait_for_function('document.querySelector("#radarCanvas").hidden')
 
     # Historical radar is a separate, explicitly marked time axis.
     page.locator('#modeRadar').click()
     page.wait_for_function('openwetterTest.state.radar?.frames?.length===12')
-    page.wait_for_function('document.querySelectorAll("#radarTiles img").length>0')
+    page.wait_for_function('document.querySelector("#radarCanvas").width>0')
     assert 'OBSERVED' in page.locator('#timeRange').inner_text()
     input_range(page,'#timeSlider',5)
     assert state('radarIndex')==5
-    assert 'RainViewer' in page.locator('#radarAttribution').inner_text()
+    assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
     page.locator('#toggleRain').click()  # Radar history can also be switched off from the map.
     assert state('mode')=='forecast'
-    page.wait_for_function('document.querySelectorAll("#radarTiles img").length===0')
+    page.wait_for_function('document.querySelector("#radarCanvas").hidden')
     page.locator('#modelSelect').select_option('icon_d2')
     page.locator('#horizon48').click()
     input_range(page,'#timeSlider',12)
