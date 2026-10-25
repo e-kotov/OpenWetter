@@ -425,6 +425,26 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[0].time')
     assert page.evaluate('(url)=>window.__mockCounts().radarFiles[url]||0',oldest_url)==1,'Previously viewed radar frame was downloaded twice'
     assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
+    # New continuous playback keeps true observations before forecasts and blends the source boundary.
+    page.locator('#modeContinuous').click()
+    assert state('mode')=='continuous'
+    assert page.locator('#modeContinuous').get_attribute('aria-pressed')=='true'
+    combined=page.evaluate('openwetterTest.combinedFrames()')
+    assert combined and combined[0]['kind']=='radar'
+    assert combined[-1]['kind']=='forecast'
+    assert all(combined[i]['time']<combined[i+1]['time'] for i in range(len(combined)-1))
+    assert 'OBSERVED RADAR' in page.locator('#timeRange').inner_text()
+    first_forecast=next(i for i,frame in enumerate(combined) if frame['kind']=='forecast')
+    input_range(page,'#timeSlider',first_forecast)
+    assert 'ICON FORECAST' in page.locator('#timeRange').inner_text()
+    assert state('continuousCursor.kind')=='forecast'
+    assert page.locator('#boundaryTransitionCanvas').get_attribute('data-from-source')=='radar'
+    assert page.locator('#boundaryTransitionCanvas').get_attribute('data-to-source')=='forecast'
+    page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
+    input_range(page,'#timeSlider',first_forecast-1)
+    assert state('continuousCursor.kind')=='radar'
+    page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
+    page.wait_for_timeout(450)
     page.locator('#modeForecast').click()  # Explicitly switch back to future model predictions.
     assert state('mode')=='forecast'
     assert page.locator('#forecastHorizonButtons').is_visible()
