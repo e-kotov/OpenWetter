@@ -128,7 +128,7 @@ export async function iconEuWmsImage(url){
   }
   return imagePending.get(url);
 }
-export async function paintIconEuWms(ctx,metadata,time,width,height,zoom,center,isCurrent=()=>true){
+export async function paintIconEuWms(ctx,metadata,time,width,height,zoom,center,isCurrent=()=>true,beforeDraw=()=>()=>{}){
   const t=iconEuValidTime(metadata,time);if(t===null)return false;
   const tiles=visibleIconEuWmsTiles(metadata,t,width,height,zoom,center);
   if(!tiles.length)return false;
@@ -138,11 +138,13 @@ export async function paintIconEuWms(ctx,metadata,time,width,height,zoom,center,
     throw first.reason;
   }
   if(!isCurrent())return false;
+  const finish=beforeDraw();
   ctx.clearRect(0,0,width,height);
   for(let i=0;i<tiles.length;i++){
     const tile=tiles[i];
     ctx.drawImage(fetched[i].value,tile.left,tile.top,tile.size,tile.size);
   }
+  finish();
   // Prefetch just the next hour in the current viewport, not the full model.
   const next=t+3600;
   if(iconEuValidTime(metadata,next)!==null){

@@ -11,6 +11,7 @@ import {fetchNativeManifest,downloadNativeFrame,downloadNativePointSeries,
 import {visibleIconSpatialTiles,downloadIconSpatialTile,paintIconSpatialTile,
   preloadIconSpatialViewport} from './spatial-icon.mjs';
 import {fetchIconEuCapabilities,paintIconEuWms,iconEuValidTime} from './wms-eu.mjs';
+import {createWeatherCrossfade} from './frame-transition.mjs';
 
 const el=id=>document.getElementById(id);
 const fields=[
@@ -19,11 +20,11 @@ const fields=[
   'quickCloud','message','plotsHeading','horizon48','horizon120','graphStack','playBtn','timeLabel',
   'timeRange','timeSlider','startLabel','endLabel','settingsPanel','horizontalSpeed','horizontalOutput',
   'verticalSpeed','verticalOutput','opacitySlider','opacityOutput','cloudOpacitySlider','cloudOpacityOutput',
-  'map','baseTiles','iconCanvas','radarCanvas','radarTiles','cloudTiles','toggleRain','toggleClouds',
+  'map','baseTiles','iconCanvas','iconTransitionCanvas','radarCanvas','radarTransitionCanvas','radarTiles','cloudTiles','toggleRain','toggleClouds',
   'toggleForecastRain','toggleForecastClouds',
   'mapPin','pinTemp','mapLayerName','mapModelName','modeForecast','modeRadar','zoomIn','zoomOut',
   'resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
-  'placesList','savePlace','cacheRadarBtn','cacheForecastBtn','cacheProgress',
+  'placesList','savePlace','cacheRadarBtn','cacheForecastBtn','cacheProgress','smoothFrames',
   'forecastHorizonButtons','radarHistoryButtons','radarHours2','radarHours6',
 ];
 const dom=Object.fromEntries(fields.map(k=>[k,el(k)]));
@@ -36,6 +37,7 @@ const state={
   anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
   forecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
   radar:null,radarIndex:0,radarHours:6,displayedRadarTime:null,playing:false,
+  smoothFrames:true,
   iconGrid:null,iconGridError:null,gridSeries:null,euWms:null,euWmsError:null,
   showForecastRain:true,showForecastClouds:false,
 };
@@ -52,6 +54,19 @@ const pointers=new Map();
 let drag=null;
 const FORECAST_MAX_AGE=45*60_000;
 const STORAGE='openwetter.settings.v2';
+const crossfades={
+  forecast:createWeatherCrossfade(dom.iconCanvas,dom.iconTransitionCanvas,{
+    durationMs:260,opacity:()=>1,enabled:()=>state.smoothFrames
+  }),
+  radar:createWeatherCrossfade(dom.radarCanvas,dom.radarTransitionCanvas,{
+    durationMs:260,opacity:()=>state.radarOpacity,enabled:()=>state.smoothFrames
+  })
+};
+function mapViewKey(layer,width,height,ratio,map,extra=''){
+  return [layer,width,height,ratio,map.zoom,map.latitude.toFixed(6),
+    map.longitude.toFixed(6),extra].join('|');
+}
+
 
 function save(){
   try{localStorage.setItem(STORAGE,JSON.stringify({place:state.place,favorites:state.favorites,
@@ -59,7 +74,7 @@ function save(){
     verticalHours:state.verticalHours,radarOpacity:state.radarOpacity,cloudOpacity:state.cloudOpacity,
     showRain:state.showRain,showClouds:state.showClouds,
     showForecastRain:state.showForecastRain,showForecastClouds:state.showForecastClouds,
-    radarHours:state.radarHours}));}catch{/* Browsers may deny storage. */}
+    radarHours:state.radarHours,smoothFrames:state.smoothFrames}));}catch{/* Browsers may deny storage. */}
 }
 function validPlace(p){return p&&typeof p.name==='string'&&p.name.length>0&&p.name.length<150&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=85&&Math.abs(p.longitude)<=180;}
 function loadPreferences(){
@@ -72,6 +87,7 @@ function loadPreferences(){
     if(Object.hasOwn(MODELS,p.model))state.model=p.model;
     if([48,120].includes(p.horizon))state.horizon=p.horizon;
     if([2,6].includes(p.radarHours))state.radarHours=p.radarHours;
+    if(typeof p.smoothFrames==='boolean')state.smoothFrames=p.smoothFrames;
     if(Number.isFinite(p.horizontalHours))state.horizontalHours=clamp(p.horizontalHours,1,24);
     if(Number.isFinite(p.verticalHours))state.verticalHours=clamp(p.verticalHours,4,72);
     if(Number.isFinite(p.radarOpacity))state.radarOpacity=clamp(p.radarOpacity,.1,1);
@@ -399,6 +415,7 @@ function updateOverlayUI(){
   dom.toggleRain.textContent='📡 Latest observed radar (not forecast)';
   dom.toggleClouds.textContent='☁ Latest satellite (observed)';
   dom.radarCanvas.hidden=!visibleRain;
+  if(!visibleRain){crossfades.radar.stop();dom.radarTransitionCanvas.hidden=true;}
   dom.radarTiles.style.display='none';
   dom.cloudTiles.hidden=!state.showClouds;
   const observations=[];
@@ -495,10 +512,14 @@ function drawShownRadar(ctx,width,height,ratio,map,resized){
   const key=[radarFrameShown.time,radarFrameShown.manifest.generated_at||'',
     width,height,ratio,map.latitude,map.longitude,map.zoom].join('|');
   if(!resized&&radarCanvasPaintKey===key)return;
+  const scene=mapViewKey('radar',width,height,ratio,map,
+    [state.mode,radarFrameShown.manifest.width,radarFrameShown.manifest.height].join(':'));
+  const finish=crossfades.radar.beforeDraw(`observed:${radarFrameShown.time}`,scene,{resized});
   ctx.clearRect(0,0,width,height);
   paintNativeField(ctx,radarFrameShown.manifest,radarFrameShown.data,'radar',
     width,height,map.zoom,map,1);
   radarCanvasPaintKey=key;
+  finish();
 }
 function prefetchRadarNearby(manifest,frameIndex){
   clearTimeout(radarPrefetchTimer);
@@ -553,7 +574,7 @@ function requestRadarFrame(manifest,time){
  * timestep. Each visible region is one cached ~1° tile with ALL 48h frames.
  * Keep the last rendered frame until every visible tile has arrived.
  */
-async function paintD2SpatialViewport(ctx,model,time,width,height,zoom,map,generation){
+async function paintD2SpatialViewport(ctx,model,time,width,height,zoom,map,generation,scene,resized){
   const specs=visibleIconSpatialTiles(model,width,height,zoom,map);
   if(!specs.length){if(generation===forecastPaintEpoch)ctx.clearRect(0,0,width,height);return;}
   let next=0,errors=0;
@@ -571,6 +592,7 @@ async function paintD2SpatialViewport(ctx,model,time,width,height,zoom,map,gener
     showMessage('ICON-D2 regional map tiles unavailable; retry on another connection.',true);
     return; // preserve last good map frame
   }
+  const finish=crossfades.forecast.beforeDraw(`icon-d2:${model.run}:${time}`,scene,{resized});
   ctx.clearRect(0,0,width,height);
   for(const field of ['cloud','precip']){
     if(field==='cloud'&&!state.showForecastClouds)continue;
@@ -578,23 +600,30 @@ async function paintD2SpatialViewport(ctx,model,time,width,height,zoom,map,gener
     for(const tile of tiles)if(tile)
       paintIconSpatialTile(ctx,tile,field,time,width,height,zoom,map);
   }
+  finish();
   if(errors)showMessage(errors+' ICON-D2 regional tiles unavailable (partial map).',true);
 }
 async function paintNativeGrid(){
   const rect=dom.map.getBoundingClientRect();
   if(!rect.width||!rect.height)return;
   const width=rect.width,height=rect.height,ratio=Math.min(2.5,window.devicePixelRatio||1);
-  const {ctx:iconCtx}=prepareRasterCanvas(dom.iconCanvas,width,height,ratio);
+  const {ctx:iconCtx,resized:iconResized}=prepareRasterCanvas(dom.iconCanvas,width,height,ratio);
   const {ctx:radarCtx,resized:radarResized}=prepareRasterCanvas(dom.radarCanvas,width,height,ratio);
+  if(iconResized)crossfades.forecast.stop();
+  if(radarResized)crossfades.radar.stop();
   const generation=++forecastPaintEpoch,model=state.iconGrid,time=state.selectedTime,map={...state.map};
   const canvasSource=state.mode+'/'+state.model;
   if(forecastCanvasSource!==canvasSource){
+    crossfades.forecast.stop();
     iconCtx.clearRect(0,0,width,height);
     forecastCanvasSource=canvasSource;
   }
+  const forecastScene=mapViewKey('forecast',width,height,ratio,map,
+    [state.model,state.showForecastRain,state.showForecastClouds,
+      model?.run||state.euWms?.run||''].join(':'));
   if(state.mode==='forecast'&&state.model==='icon_d2'&&model&&(state.showForecastRain||state.showForecastClouds)){
     if(map.zoom>=7){
-      void paintD2SpatialViewport(iconCtx,model,time,width,height,map.zoom,map,generation)
+      void paintD2SpatialViewport(iconCtx,model,time,width,height,map.zoom,map,generation,forecastScene,iconResized)
         .catch(error=>{if(generation===forecastPaintEpoch)showMessage('D2 tile render: '+error.message,true);});
     }else{
       // Whole-domain fallback for overview zooms, when many regional tiles
@@ -607,18 +636,28 @@ async function paintNativeGrid(){
         const clouds=results[0].status==='fulfilled'?results[0].value:null;
         const rain=results[1].status==='fulfilled'?results[1].value:null;
         if(!clouds&&!rain)return;
+        const finish=crossfades.forecast.beforeDraw(
+          `icon-d2:${model.run}:${time}`,forecastScene,{resized:iconResized});
         iconCtx.clearRect(0,0,width,height);
         if(clouds)paintNativeField(iconCtx,model,clouds.data,'cloud',width,height,map.zoom,map,.58);
         if(rain)paintNativeField(iconCtx,model,rain.data,'precip',width,height,map.zoom,map,.87);
+        finish();
       }).catch(error=>showMessage('ICON-D2 map: '+error.message,true));
     }
   }else if(state.mode==='forecast'&&state.model==='icon_eu'&&
       state.euWms&&state.showForecastRain){
-    if(iconEuValidTime(state.euWms,time)===null)iconCtx.clearRect(0,0,width,height);
-    else void paintIconEuWms(iconCtx,state.euWms,time,width,height,map.zoom,map,
-       ()=>generation===forecastPaintEpoch)
+    if(iconEuValidTime(state.euWms,time)===null){
+      crossfades.forecast.stop();
+      iconCtx.clearRect(0,0,width,height);
+    }else void paintIconEuWms(iconCtx,state.euWms,time,width,height,map.zoom,map,
+       ()=>generation===forecastPaintEpoch,
+       ()=>crossfades.forecast.beforeDraw(
+         `icon-eu:${state.euWms.run}:${time}`,forecastScene,{resized:iconResized}))
        .catch(error=>{if(generation===forecastPaintEpoch)showMessage('ICON-EU WMS tiles: '+error.message,true);});
-  }else iconCtx.clearRect(0,0,width,height);
+  }else{
+    crossfades.forecast.stop();
+    iconCtx.clearRect(0,0,width,height);
+  }
   if((state.mode==='radar'||state.showRain)&&state.radar?.frames?.length){
     const manifest=state.radar,frameTime=manifest.frames[state.radarIndex]?.time;
     const inCache=peekNativeFrame(manifest,'radar',frameTime);
@@ -632,7 +671,7 @@ async function paintNativeGrid(){
     if(frameTime!=null&&(!radarFrameShown||radarFrameShown.time!==frameTime||
          radarFrameShown.manifest!==manifest))requestRadarFrame(manifest,frameTime);
     updateOverlayUI();
-  }
+  }else crossfades.radar.stop();
 }
 function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}
 function play(){
@@ -1006,9 +1045,14 @@ function wire(){
     state.cloudOpacity=Number(event.target.value)/100;dom.cloudTiles.style.opacity=String(state.cloudOpacity);
     dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;save();
   });
+  dom.smoothFrames.addEventListener('change',event=>{
+    state.smoothFrames=event.target.checked;
+    if(!state.smoothFrames){crossfades.forecast.stop({forget:false});crossfades.radar.stop({forget:false});}
+    save();
+  });
   dom.opacitySlider.addEventListener('input',event=>{
     state.radarOpacity=Number(event.target.value)/100;
-    dom.radarCanvas.style.opacity=String(state.radarOpacity);
+    crossfades.radar.updateOpacity();
     dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;save();
   });
   dom.graphStack.addEventListener('pointerdown',event=>{
@@ -1063,6 +1107,7 @@ dom.verticalOutput.textContent=`${state.verticalHours} h / 100 px`;
 dom.opacitySlider.value=String(Math.round(state.radarOpacity*100));
 dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;
 dom.radarCanvas.style.opacity=String(state.radarOpacity);
+dom.smoothFrames.checked=state.smoothFrames;
 dom.cloudOpacitySlider.value=String(Math.round(state.cloudOpacity*100));
 dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;
 dom.cloudTiles.style.opacity=String(state.cloudOpacity);

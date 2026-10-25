@@ -208,3 +208,15 @@ input[type=range]{width:100%;accent-color:#ff5d6e;cursor:pointer;margin:3px 0}
   .map-label{left:7px;max-width:calc(100% - 56px);font-size:10px}
   .map-overlays{top:102px}
 }
+
+/* Visual crossfade only: no synthetic weather frames or date interpolation. */
+.forecast-crossfade{z-index:2}
+.radar-crossfade{z-index:4}
+.weather-crossfade{opacity:0;pointer-events:none}
+.weather-crossfade[hidden]{display:none!important}
+.map-pin{z-index:6}
+.settings label.smooth-frame-option{justify-content:flex-start;gap:10px;margin:5px 0 14px;line-height:1.4}
+.settings .smooth-frame-option input[type=checkbox]{width:17px;height:17px;margin:0;flex:none}
+@media (prefers-reduced-motion: reduce){
+  .weather-crossfade{transition:none!important}
+}

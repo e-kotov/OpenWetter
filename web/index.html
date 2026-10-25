@@ -65,6 +65,7 @@
       <input id="opacitySlider" type="range" min="10" max="100" step="5" value="75" />
       <label for="cloudOpacitySlider">Cloud transparency <output id="cloudOpacityOutput">50%</output></label>
       <input id="cloudOpacitySlider" type="range" min="10" max="100" step="5" value="50" />
+      <label class="smooth-frame-option" for="smoothFrames"><input id="smoothFrames" type="checkbox" checked/> Smooth weather frame transitions (260 ms)</label>
       <div class="setting-title"><strong>Offline weather cache</strong><span>Download once, scrub without repeated transfers</span></div>
       <button id="cacheRadarBtn" type="button" class="overlay-btn cache-download">Cache 6 h observed radar (~40 MB)</button>
       <button id="cacheForecastBtn" type="button" class="overlay-btn cache-download">Cache visible ICON-D2 area (48 h)</button>
@@ -74,7 +75,7 @@
   </section>
 
   <section id="map" class="map" aria-label="Weather map: swipe right or up to move forward in time; two fingers to pan or zoom">
-    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><canvas id="iconCanvas" class="icon-grid-layer" aria-label="Genuine DWD ICON-D2 rain/cloud and ICON-EU precipitation forecast maps"></canvas><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><div id="radarTiles" class="tiles radar-tiles" hidden></div><canvas id="radarCanvas" class="icon-grid-layer radar-canvas" aria-label="DWD radar rain observations at 1 km resolution"></canvas><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
+    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><canvas id="iconCanvas" class="icon-grid-layer" aria-label="Genuine DWD ICON-D2 rain/cloud and ICON-EU precipitation forecast maps"></canvas><canvas id="iconTransitionCanvas" class="icon-grid-layer weather-crossfade forecast-crossfade" aria-hidden="true" hidden></canvas><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><div id="radarTiles" class="tiles radar-tiles" hidden></div><canvas id="radarCanvas" class="icon-grid-layer radar-canvas" aria-label="DWD radar rain observations at 1 km resolution"></canvas><canvas id="radarTransitionCanvas" class="icon-grid-layer radar-canvas weather-crossfade radar-crossfade" aria-hidden="true" hidden></canvas><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
     <div class="map-label"><span class="map-dot"></span><span id="mapLayerName">FORECAST · model prediction</span><small id="mapModelName">Predicted by DWD ICON-D2</small></div>
     <div class="map-mode" role="group" aria-label="Timeline mode"><button id="modeForecast" class="mode-btn active" aria-pressed="true">◈ Forecast · future</button><button id="modeRadar" class="mode-btn" aria-pressed="false">◉ Radar · past 6h</button></div>
     <div class="map-overlays native-overlays" role="group" aria-label="Time-changing DWD ICON-D2 and ICON-EU forecast map layers">

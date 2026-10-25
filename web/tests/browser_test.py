@@ -21,6 +21,7 @@ GRID = (ROOT/'icon-grid.mjs').read_text()
 NATIVE = (ROOT/'native-fields.mjs').read_text()
 SPATIAL = (ROOT/'spatial-icon.mjs').read_text()
 WMS_EU = (ROOT/'wms-eu.mjs').read_text()
+TRANSITION = (ROOT/'frame-transition.mjs').read_text()
 FRAME_CACHE = (ROOT/'frame-cache.mjs').read_text()
 frame_cache_url = 'data:text/javascript;base64,'+base64.b64encode(FRAME_CACHE.encode()).decode()
 GRID = GRID.replace("from './logic.mjs'", f"from '{logic_url}'")
@@ -33,11 +34,13 @@ spatial_url = 'data:text/javascript;base64,'+base64.b64encode(SPATIAL.encode()).
 WMS_EU = WMS_EU.replace("from './logic.mjs'", f"from '{logic_url}'")
 WMS_EU = WMS_EU.replace("from './frame-cache.mjs'", f"from '{frame_cache_url}'")
 wms_url = 'data:text/javascript;base64,'+base64.b64encode(WMS_EU.encode()).decode()
+transition_url = 'data:text/javascript;base64,'+base64.b64encode(TRANSITION.encode()).decode()
 APP = APP.replace("from './logic.mjs'", f"from '{logic_url}'")
 APP = APP.replace("from './icon-grid.mjs'", f"from '{grid_url}'")
 APP = APP.replace("from './native-fields.mjs'", f"from '{native_url}'")
 APP = APP.replace("from './spatial-icon.mjs'", f"from '{spatial_url}'")
 APP = APP.replace("from './wms-eu.mjs'", f"from '{wms_url}'")
+APP = APP.replace("from './frame-transition.mjs'", f"from '{transition_url}'")
 APP = APP.replace("if(new URLSearchParams(location.search).has('test'))window.openwetterTest=", "window.openwetterTest=")
 APP_B64 = base64.b64encode(APP.encode()).decode()
 HTML = HTML.replace('<link rel="stylesheet" href="styles.css"/>', '<style>'+CSS+'</style>')
@@ -364,6 +367,8 @@ def ui(kind,viewport,browser):
        return rgba[3]>0;
     })()''')
     assert 'OBSERVED' in page.locator('#timeRange').inner_text()
+    assert page.locator('#smoothFrames').is_checked()
+    assert page.locator('#radarTransitionCanvas').is_hidden()
     # Delay an uncached radar frame. The old image must stay in place during scrubbing.
     before=page.locator('#radarCanvas').evaluate('(canvas)=>canvas.toDataURL()')
     page.evaluate('window.__delayRadarFrames=true')
@@ -378,6 +383,24 @@ def ui(kind,viewport,browser):
     page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[5].time')
     assert 'loading' not in page.locator('#mapModelName').inner_text()
     assert state('radarIndex')==5
+    page.wait_for_function('''()=>{
+      const old=document.querySelector('#radarTransitionCanvas');
+      return old.dataset.fromFrame&&old.dataset.toFrame==='observed:'+openwetterTest.state.radar.frames[5].time;
+    }''')
+    assert page.locator('#radarTransitionCanvas').is_visible()
+    assert page.locator('#radarCanvas').get_attribute('data-weather-frame')=='observed:'+str(state('radar.frames[5].time'))
+    assert '260ms' in page.locator('#radarTransitionCanvas').evaluate('(c)=>c.style.transition')
+    # Animated outgoing weather should fade to zero without hiding the
+    # incoming real scan or changing its five-minute timestamp.
+    page.wait_for_timeout(310)
+    assert page.locator('#radarTransitionCanvas').evaluate('(c)=>getComputedStyle(c).opacity') in ('0','0.0')
+    page.locator('#settingsBtn').click()
+    page.locator('#smoothFrames').uncheck()
+    assert state('smoothFrames') is False
+    page.locator('#settingsBtn').click()
+    input_range(page,'#timeSlider',4)
+    page.wait_for_function('openwetterTest.state.displayedRadarTime === openwetterTest.state.radar.frames[4].time')
+    assert page.locator('#radarTransitionCanvas').is_hidden(), 'Reduced animation mode must be an instant swap'
     # Walk beyond the eight-frame decoded-RAM LRU, then return to an old frame:
     # it must use persistent compressed storage without a second network fetch.
     for ix in range(11,-1,-1):
@@ -450,6 +473,16 @@ def verify_grids_survive_point_api_abort(browser):
     assert page.locator('#heroTemp').inner_text()=='11°'
     assert page.locator('#quickCloud').inner_text()=='60%'
     assert page.locator('#quickWind').inner_text()!='— km/h'
+    # Time-packed D2 map frames crossfade visually without generating
+    # additional forecast frames or altering published 15-minute data.
+    page.wait_for_function('''()=>document.querySelector('#iconCanvas').dataset.weatherFrame?.startsWith('icon-d2:')''')
+    page.evaluate('openwetterTest.setSelectedTime(openwetterTest.state.anchor+900)')
+    page.wait_for_function('''()=>{
+      const c=document.querySelector('#iconTransitionCanvas');
+      return c.dataset.toFrame?.endsWith(':'+openwetterTest.state.selectedTime);
+    }''')
+    assert page.locator('#iconTransitionCanvas').is_visible()
+    assert page.evaluate('openwetterTest.state.forecasts.icon_d2.hourly.time.length')==193
     assert not errors,errors
     print('D2 point API abort and grid-only forecast recovery: OK')
     page.close()
