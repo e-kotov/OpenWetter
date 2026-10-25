@@ -1,0 +1,44 @@
+name: Publish real DWD ICON-D2 forecast grids
+on:
+  schedule:
+    - cron: '35 */6 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/produce_icon.py
+      - .github/workflows/icon-data.yml
+permissions:
+  contents: write
+concurrency:
+  group: icon-data
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install DWD GRIB and spatial remapping libraries
+        run: python -m pip install numpy scipy eccodes
+      - name: Download and resample 49 real ICON-D2 forecast hours
+        run: python tools/produce_icon.py
+      - name: Publish compact frames to separate data branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global user.name 'OpenWetter weather data bot'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          mkdir -p /tmp/openwetter-data
+          cp icon-data/latest.json.gz icon-data/manifest.json /tmp/openwetter-data/
+          cd /tmp/openwetter-data
+          git init -b icon-data
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add latest.json.gz manifest.json
+          git commit -m "Update DWD ICON-D2 forecast fields ${GITHUB_RUN_ID}"
+          # This branch is a disposable cache and intentionally contains only
+          # the latest full forecast, avoiding permanent large-file history.
+          git push --force origin HEAD:refs/heads/icon-data
