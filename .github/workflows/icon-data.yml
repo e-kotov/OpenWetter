@@ -1,7 +1,7 @@
 name: Publish near-native DWD ICON-D2 grids
 on:
   schedule:
-    - cron: '25 */3 * * *'
+    - cron: '37 */3 * * *'
   workflow_dispatch:
   push:
     paths:

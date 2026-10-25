@@ -2,7 +2,7 @@
 
 Experimental Android and browser weather application. Real **Deutscher Wetterdienst (DWD) ICON-D2** rain and cloud forecasts, 1 km observed DWD radar, and synchronized time scrubbing. The source is MIT-licensed; DWD data and third-party base maps have their own terms.
 
-## Current alpha.4 features
+## Current alpha.5 features
 
 - **Real DWD ICON-D2 model data:** 193 predicted precipitation frames at **15-minute** intervals covering 48 hours; 49 hourly cloud and 2-metre temperature frames. Sources are native GRIB2 fields processed by `tools/produce_icon.py`, not simulated forecasts.
 - **High-detail map:** DWD's approximately 2.1 km unstructured triangular mesh is sampled into a 0.0125° latitude–longitude grid for display. This preserves substantially more native spatial detail than alpha.3's 0.05° grid, but the display mesh must not be misrepresented as weather information finer than the original ICON model.
