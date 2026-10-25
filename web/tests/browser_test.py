@@ -395,7 +395,8 @@ def ui(kind,viewport,browser):
       return {from:fade.dataset.fromFrame,to:fade.dataset.toFrame,attempt:fade.dataset.lastAttempt,
         hidden:fade.hidden,active:front.dataset.weatherFrame,frontOpacity:getComputedStyle(front).opacity,
         fadeOpacity:getComputedStyle(fade).opacity,media:matchMedia('(prefers-reduced-motion: reduce)').matches,
-        sceneMode:openwetterTest.state.mode};
+        sceneMode:openwetterTest.state.mode,appMessage:document.querySelector('#message').textContent,
+        outgoingWidth:fade.width,mainWidth:front.width};
     }"""),flush=True)
     page.wait_for_function('''()=>{
       const old=document.querySelector('#radarTransitionCanvas');
