@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'New GitHub release tag (for example v0.1.0-beta.1; must not already exist)'
+        description: 'New GitHub release tag (for example v0.1.0-beta.3; must not already exist)'
         required: true
         type: string
       prerelease:
@@ -17,7 +17,7 @@ permissions:
   contents: read
 jobs:
   signed-release:
-    if: ${{ github.repository == 'e-kotov/OpenWetter' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Publish OpenWetter v0.1.0-beta.2 signed prerelease') }}
+    if: ${{ github.repository == 'e-kotov/OpenWetter' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Publish OpenWetter v0.1.0-beta.3 signed prerelease') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -47,11 +47,11 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.2' }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.3' }}
           OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
       - name: Stamp chosen version into this build (without changing Git history)
         env:
-          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.2' }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.3' }}
         run: |
           python - <<'PYCODE'
           import os,re,pathlib
@@ -79,7 +79,7 @@ jobs:
         run: gradle -p android :app:assembleRelease --stacktrace
       - name: Decrypt and sign with the persistent private certificate
         env:
-          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.2' }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.3' }}
           OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
         shell: bash
         run: |
@@ -111,7 +111,7 @@ jobs:
       - name: Publish signed GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.2' }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.0-beta.3' }}
           PRERELEASE: ${{ github.event_name == 'push' || inputs.prerelease }}
         shell: bash
         run: |
