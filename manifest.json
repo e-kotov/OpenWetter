@@ -17,303 +17,303 @@
   "encoding": "uint16-le",
   "gain": 0.01,
   "nodata": 65535,
-  "generated_at": "2026-10-29T12:05:58.804320+00:00",
-  "latest_age_seconds": 306,
+  "generated_at": "2026-10-29T18:27:04.084859+00:00",
+  "latest_age_seconds": 60,
   "history_hours": 6.0,
   "cadence_minutes": 5,
   "target_hours": 6,
   "frames": [
     {
-      "time": 1793253600,
-      "file": "frames/1793253600.bin.gz"
+      "time": 1793276700,
+      "file": "frames/1793276700.bin.gz"
     },
     {
-      "time": 1793253900,
-      "file": "frames/1793253900.bin.gz"
+      "time": 1793277000,
+      "file": "frames/1793277000.bin.gz"
     },
     {
-      "time": 1793254200,
-      "file": "frames/1793254200.bin.gz"
+      "time": 1793277300,
+      "file": "frames/1793277300.bin.gz"
     },
     {
-      "time": 1793254500,
-      "file": "frames/1793254500.bin.gz"
+      "time": 1793277600,
+      "file": "frames/1793277600.bin.gz"
     },
     {
-      "time": 1793254800,
-      "file": "frames/1793254800.bin.gz"
+      "time": 1793277900,
+      "file": "frames/1793277900.bin.gz"
     },
     {
-      "time": 1793255100,
-      "file": "frames/1793255100.bin.gz"
+      "time": 1793278200,
+      "file": "frames/1793278200.bin.gz"
     },
     {
-      "time": 1793255400,
-      "file": "frames/1793255400.bin.gz"
+      "time": 1793278500,
+      "file": "frames/1793278500.bin.gz"
     },
     {
-      "time": 1793255700,
-      "file": "frames/1793255700.bin.gz"
+      "time": 1793278800,
+      "file": "frames/1793278800.bin.gz"
     },
     {
-      "time": 1793256000,
-      "file": "frames/1793256000.bin.gz"
+      "time": 1793279100,
+      "file": "frames/1793279100.bin.gz"
     },
     {
-      "time": 1793256300,
-      "file": "frames/1793256300.bin.gz"
+      "time": 1793279400,
+      "file": "frames/1793279400.bin.gz"
     },
     {
-      "time": 1793256600,
-      "file": "frames/1793256600.bin.gz"
+      "time": 1793279700,
+      "file": "frames/1793279700.bin.gz"
     },
     {
-      "time": 1793256900,
-      "file": "frames/1793256900.bin.gz"
+      "time": 1793280000,
+      "file": "frames/1793280000.bin.gz"
     },
     {
-      "time": 1793257200,
-      "file": "frames/1793257200.bin.gz"
+      "time": 1793280300,
+      "file": "frames/1793280300.bin.gz"
     },
     {
-      "time": 1793257500,
-      "file": "frames/1793257500.bin.gz"
+      "time": 1793280600,
+      "file": "frames/1793280600.bin.gz"
     },
     {
-      "time": 1793257800,
-      "file": "frames/1793257800.bin.gz"
+      "time": 1793280900,
+      "file": "frames/1793280900.bin.gz"
     },
     {
-      "time": 1793258100,
-      "file": "frames/1793258100.bin.gz"
+      "time": 1793281200,
+      "file": "frames/1793281200.bin.gz"
     },
     {
-      "time": 1793258400,
-      "file": "frames/1793258400.bin.gz"
+      "time": 1793281500,
+      "file": "frames/1793281500.bin.gz"
     },
     {
-      "time": 1793258700,
-      "file": "frames/1793258700.bin.gz"
+      "time": 1793281800,
+      "file": "frames/1793281800.bin.gz"
     },
     {
-      "time": 1793259000,
-      "file": "frames/1793259000.bin.gz"
+      "time": 1793282100,
+      "file": "frames/1793282100.bin.gz"
     },
     {
-      "time": 1793259300,
-      "file": "frames/1793259300.bin.gz"
+      "time": 1793282400,
+      "file": "frames/1793282400.bin.gz"
     },
     {
-      "time": 1793259600,
-      "file": "frames/1793259600.bin.gz"
+      "time": 1793282700,
+      "file": "frames/1793282700.bin.gz"
     },
     {
-      "time": 1793259900,
-      "file": "frames/1793259900.bin.gz"
+      "time": 1793283000,
+      "file": "frames/1793283000.bin.gz"
     },
     {
-      "time": 1793260200,
-      "file": "frames/1793260200.bin.gz"
+      "time": 1793283300,
+      "file": "frames/1793283300.bin.gz"
     },
     {
-      "time": 1793260500,
-      "file": "frames/1793260500.bin.gz"
+      "time": 1793283600,
+      "file": "frames/1793283600.bin.gz"
     },
     {
-      "time": 1793260800,
-      "file": "frames/1793260800.bin.gz"
+      "time": 1793283900,
+      "file": "frames/1793283900.bin.gz"
     },
     {
-      "time": 1793261100,
-      "file": "frames/1793261100.bin.gz"
+      "time": 1793284200,
+      "file": "frames/1793284200.bin.gz"
     },
     {
-      "time": 1793261400,
-      "file": "frames/1793261400.bin.gz"
+      "time": 1793284500,
+      "file": "frames/1793284500.bin.gz"
     },
     {
-      "time": 1793261700,
-      "file": "frames/1793261700.bin.gz"
+      "time": 1793284800,
+      "file": "frames/1793284800.bin.gz"
     },
     {
-      "time": 1793262000,
-      "file": "frames/1793262000.bin.gz"
+      "time": 1793285100,
+      "file": "frames/1793285100.bin.gz"
     },
     {
-      "time": 1793262300,
-      "file": "frames/1793262300.bin.gz"
+      "time": 1793285400,
+      "file": "frames/1793285400.bin.gz"
     },
     {
-      "time": 1793262600,
-      "file": "frames/1793262600.bin.gz"
+      "time": 1793285700,
+      "file": "frames/1793285700.bin.gz"
     },
     {
-      "time": 1793262900,
-      "file": "frames/1793262900.bin.gz"
+      "time": 1793286000,
+      "file": "frames/1793286000.bin.gz"
     },
     {
-      "time": 1793263200,
-      "file": "frames/1793263200.bin.gz"
+      "time": 1793286300,
+      "file": "frames/1793286300.bin.gz"
     },
     {
-      "time": 1793263500,
-      "file": "frames/1793263500.bin.gz"
+      "time": 1793286600,
+      "file": "frames/1793286600.bin.gz"
     },
     {
-      "time": 1793263800,
-      "file": "frames/1793263800.bin.gz"
+      "time": 1793286900,
+      "file": "frames/1793286900.bin.gz"
     },
     {
-      "time": 1793264100,
-      "file": "frames/1793264100.bin.gz"
+      "time": 1793287200,
+      "file": "frames/1793287200.bin.gz"
     },
     {
-      "time": 1793264400,
-      "file": "frames/1793264400.bin.gz"
+      "time": 1793287500,
+      "file": "frames/1793287500.bin.gz"
     },
     {
-      "time": 1793264700,
-      "file": "frames/1793264700.bin.gz"
+      "time": 1793287800,
+      "file": "frames/1793287800.bin.gz"
     },
     {
-      "time": 1793265000,
-      "file": "frames/1793265000.bin.gz"
+      "time": 1793288100,
+      "file": "frames/1793288100.bin.gz"
     },
     {
-      "time": 1793265300,
-      "file": "frames/1793265300.bin.gz"
+      "time": 1793288400,
+      "file": "frames/1793288400.bin.gz"
     },
     {
-      "time": 1793265600,
-      "file": "frames/1793265600.bin.gz"
+      "time": 1793288700,
+      "file": "frames/1793288700.bin.gz"
     },
     {
-      "time": 1793265900,
-      "file": "frames/1793265900.bin.gz"
+      "time": 1793289000,
+      "file": "frames/1793289000.bin.gz"
     },
     {
-      "time": 1793266200,
-      "file": "frames/1793266200.bin.gz"
+      "time": 1793289300,
+      "file": "frames/1793289300.bin.gz"
     },
     {
-      "time": 1793266500,
-      "file": "frames/1793266500.bin.gz"
+      "time": 1793289600,
+      "file": "frames/1793289600.bin.gz"
     },
     {
-      "time": 1793266800,
-      "file": "frames/1793266800.bin.gz"
+      "time": 1793289900,
+      "file": "frames/1793289900.bin.gz"
     },
     {
-      "time": 1793267100,
-      "file": "frames/1793267100.bin.gz"
+      "time": 1793290200,
+      "file": "frames/1793290200.bin.gz"
     },
     {
-      "time": 1793267400,
-      "file": "frames/1793267400.bin.gz"
+      "time": 1793290500,
+      "file": "frames/1793290500.bin.gz"
     },
     {
-      "time": 1793267700,
-      "file": "frames/1793267700.bin.gz"
+      "time": 1793290800,
+      "file": "frames/1793290800.bin.gz"
     },
     {
-      "time": 1793268000,
-      "file": "frames/1793268000.bin.gz"
+      "time": 1793291100,
+      "file": "frames/1793291100.bin.gz"
     },
     {
-      "time": 1793268300,
-      "file": "frames/1793268300.bin.gz"
+      "time": 1793291400,
+      "file": "frames/1793291400.bin.gz"
     },
     {
-      "time": 1793268600,
-      "file": "frames/1793268600.bin.gz"
+      "time": 1793291700,
+      "file": "frames/1793291700.bin.gz"
     },
     {
-      "time": 1793268900,
-      "file": "frames/1793268900.bin.gz"
+      "time": 1793292000,
+      "file": "frames/1793292000.bin.gz"
     },
     {
-      "time": 1793269200,
-      "file": "frames/1793269200.bin.gz"
+      "time": 1793292300,
+      "file": "frames/1793292300.bin.gz"
     },
     {
-      "time": 1793269500,
-      "file": "frames/1793269500.bin.gz"
+      "time": 1793292600,
+      "file": "frames/1793292600.bin.gz"
     },
     {
-      "time": 1793269800,
-      "file": "frames/1793269800.bin.gz"
+      "time": 1793292900,
+      "file": "frames/1793292900.bin.gz"
     },
     {
-      "time": 1793270100,
-      "file": "frames/1793270100.bin.gz"
+      "time": 1793293200,
+      "file": "frames/1793293200.bin.gz"
     },
     {
-      "time": 1793270400,
-      "file": "frames/1793270400.bin.gz"
+      "time": 1793293500,
+      "file": "frames/1793293500.bin.gz"
     },
     {
-      "time": 1793270700,
-      "file": "frames/1793270700.bin.gz"
+      "time": 1793293800,
+      "file": "frames/1793293800.bin.gz"
     },
     {
-      "time": 1793271000,
-      "file": "frames/1793271000.bin.gz"
+      "time": 1793294100,
+      "file": "frames/1793294100.bin.gz"
     },
     {
-      "time": 1793271300,
-      "file": "frames/1793271300.bin.gz"
+      "time": 1793294400,
+      "file": "frames/1793294400.bin.gz"
     },
     {
-      "time": 1793271600,
-      "file": "frames/1793271600.bin.gz"
+      "time": 1793294700,
+      "file": "frames/1793294700.bin.gz"
     },
     {
-      "time": 1793271900,
-      "file": "frames/1793271900.bin.gz"
+      "time": 1793295000,
+      "file": "frames/1793295000.bin.gz"
     },
     {
-      "time": 1793272200,
-      "file": "frames/1793272200.bin.gz"
+      "time": 1793295300,
+      "file": "frames/1793295300.bin.gz"
     },
     {
-      "time": 1793272500,
-      "file": "frames/1793272500.bin.gz"
+      "time": 1793295600,
+      "file": "frames/1793295600.bin.gz"
     },
     {
-      "time": 1793272800,
-      "file": "frames/1793272800.bin.gz"
+      "time": 1793295900,
+      "file": "frames/1793295900.bin.gz"
     },
     {
-      "time": 1793273100,
-      "file": "frames/1793273100.bin.gz"
+      "time": 1793296200,
+      "file": "frames/1793296200.bin.gz"
     },
     {
-      "time": 1793273400,
-      "file": "frames/1793273400.bin.gz"
+      "time": 1793296500,
+      "file": "frames/1793296500.bin.gz"
     },
     {
-      "time": 1793273700,
-      "file": "frames/1793273700.bin.gz"
+      "time": 1793296800,
+      "file": "frames/1793296800.bin.gz"
     },
     {
-      "time": 1793274000,
-      "file": "frames/1793274000.bin.gz"
+      "time": 1793297100,
+      "file": "frames/1793297100.bin.gz"
     },
     {
-      "time": 1793274300,
-      "file": "frames/1793274300.bin.gz"
+      "time": 1793297400,
+      "file": "frames/1793297400.bin.gz"
     },
     {
-      "time": 1793274600,
-      "file": "frames/1793274600.bin.gz"
+      "time": 1793297700,
+      "file": "frames/1793297700.bin.gz"
     },
     {
-      "time": 1793274900,
-      "file": "frames/1793274900.bin.gz"
+      "time": 1793298000,
+      "file": "frames/1793298000.bin.gz"
     },
     {
-      "time": 1793275200,
-      "file": "frames/1793275200.bin.gz"
+      "time": 1793298300,
+      "file": "frames/1793298300.bin.gz"
     }
   ]
 }
