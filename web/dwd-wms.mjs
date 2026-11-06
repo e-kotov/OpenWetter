@@ -87,12 +87,20 @@ export function recolorPixels(rgba,classes,hours,lut){
   const n=rgba.length/4,index=new Uint8Array(n).fill(255);
   const codes=classes.map(c=>{const r=classRate(c,hours);if(!(r>0))return -1;
     return Math.max(1,Math.min(254,Math.round(1+253*Math.log(r/0.05)/Math.log(64/0.05))));});
+  // A tile has few distinct colours: remember each colour's class.
+  const seen=new Map();
   for(let i=0;i<n;i++){
     const o=i*4;
     if(rgba[o+3]<128){rgba[o+3]=0;continue;}
-    let best=-1,bd=1e9;
-    for(let k=0;k<classes.length;k++){const [r,g,b]=classes[k].rgb,d=(rgba[o]-r)**2+(rgba[o+1]-g)**2+(rgba[o+2]-b)**2;if(d<bd){bd=d;best=k;}}
-    const code=bd<=300?codes[best]:-1;
+    const rgb=rgba[o]<<16|rgba[o+1]<<8|rgba[o+2];
+    let best=seen.get(rgb);
+    if(best===undefined){
+      let bd=1e9;best=-1;
+      for(let k=0;k<classes.length;k++){const [r,g,b]=classes[k].rgb,d=(rgba[o]-r)**2+(rgba[o+1]-g)**2+(rgba[o+2]-b)**2;if(d<bd){bd=d;best=k;}}
+      if(bd>300)best=-1;
+      seen.set(rgb,best);
+    }
+    const code=best<0?-1:codes[best];
     if(code<0){rgba[o+3]=0;continue;}
     index[i]=best;
     rgba[o]=lut[code*4];rgba[o+1]=lut[code*4+1];rgba[o+2]=lut[code*4+2];rgba[o+3]=lut[code*4+3];
@@ -120,14 +128,43 @@ export async function loadWmsMetadata({force=false}={}){
 }
 const LIMIT=80,tiles=new Map(),pending=new Map();
 let lut=null;
-async function tile(url,source,meta){
-  if(tiles.has(url)){const t=tiles.get(url);tiles.delete(url);tiles.set(url,t);return t;}
-  if(!pending.has(url))pending.set(url,(async()=>{
+/* DWD's server speaks HTTP/1.1, so the browser opens at most 6 connections
+ * to it. Network requests therefore go through a small queue: requests of
+ * periods the user has scrubbed past are dropped before they start, the
+ * newest wanted period goes first, and prefetches wait behind it. */
+const MAX_ACTIVE=4,queue=[];let active=0,sequence=0;
+function pump(){
+  for(let i=queue.length-1;i>=0;i--)if(!queue[i].lives.some(f=>f())){queue[i].reject(new Error('superseded'));queue.splice(i,1);}
+  while(active<MAX_ACTIVE&&queue.length){
+    let b=0;for(let i=1;i<queue.length;i++){const q=queue[i],c=queue[b];if(q.priority<c.priority||(q.priority===c.priority&&q.seq>c.seq))b=i;}
+    const job=queue.splice(b,1)[0];active++;
+    job.run().then(job.resolve,job.reject).finally(()=>{active--;pump();});
+  }
+}
+function enqueue(url,run,live,priority){
+  const queued=queue.find(q=>q.url===url);
+  if(queued){queued.lives.push(live);if(priority<queued.priority){queued.priority=priority;queued.seq=++sequence;}return queued.promise;}
+  const job={url,run,lives:[live],priority,seq:++sequence};
+  job.promise=new Promise((resolve,reject)=>{job.resolve=resolve;job.reject=reject;});
+  queue.push(job);pump();return job.promise;
+}
+async function download(url){
+  const r=await fetch(url);
+  if(!r.ok||!(r.headers.get('content-type')||'').includes('image/png'))throw new Error('DWD WMS image unavailable');
+  return r.arrayBuffer();
+}
+function tile(url,source,meta,live=()=>true,priority=0){
+  if(tiles.has(url)){const t=tiles.get(url);tiles.delete(url);tiles.set(url,t);return Promise.resolve(t);}
+  const waiting=pending.get(url);
+  if(waiting){waiting.lives.push(live);const q=queue.find(x=>x.url===url);
+    if(q){if(priority<q.priority){q.priority=priority;q.seq=++sequence;}}
+    return waiting.promise;}
+  const entry={lives:[live]};
+  entry.promise=(async()=>{
     let bytes=await weatherDiskCache.get('wms',url);
     if(!bytes){
-      const r=await fetch(url);
-      if(!r.ok||!(r.headers.get('content-type')||'').includes('image/png'))throw new Error('DWD WMS image unavailable');
-      bytes=await r.arrayBuffer();await weatherDiskCache.put('wms',url,bytes);
+      bytes=await enqueue(url,()=>download(url),()=>entry.lives.some(f=>f()),priority);
+      await weatherDiskCache.put('wms',url,bytes);
     }
     const bitmap=await createImageBitmap(new Blob([bytes],{type:'image/png'}));
     const c=new OffscreenCanvas(256,256),ctx=c.getContext('2d',{willReadFrequently:true});
@@ -140,15 +177,16 @@ async function tile(url,source,meta){
     tiles.set(url,out);
     while(tiles.size>LIMIT){const k=tiles.keys().next().value;tiles.get(k).image.close?.();tiles.delete(k);}
     return out;
-  })().finally(()=>pending.delete(url)));
-  return pending.get(url);
+  })().finally(()=>pending.delete(url));
+  pending.set(url,entry);
+  return entry.promise;
 }
 /** Draw the WMS rain for `time` into ctx (CSS px). Resolves to the drawn
  * description, or null if another draw superseded this one. */
 export async function paintWmsRain(ctx,view,choice,isCurrent){
   const meta=metas?.[choice.source.id];if(!meta)return null;
   const list=wmsTilesInView(choice.source,meta,choice.time,view);
-  const loaded=await Promise.all(list.map(t=>tile(t.url,choice.source,meta).catch(()=>null)));
+  const loaded=await Promise.all(list.map(t=>tile(t.url,choice.source,meta,isCurrent,0).catch(()=>null)));
   if(!isCurrent())return null;
   ctx.clearRect(0,0,view.width,view.height);ctx.imageSmoothingEnabled=false;
   list.forEach((t,i)=>{if(loaded[i])ctx.drawImage(loaded[i].image,t.left,t.top,t.size,t.size);});
@@ -157,9 +195,11 @@ export async function paintWmsRain(ctx,view,choice,isCurrent){
   list.forEach((t,i)=>{const L=loaded[i];if(!L)return;const cx=view.width/2-t.left,cy=view.height/2-t.top;
     if(cx>=0&&cy>=0&&cx<t.size&&cy<t.size){const k=L.index[Math.floor(cy/t.size*256)*256+Math.floor(cx/t.size*256)];
       centre=k===255?{lo:0,hi:0}:{lo:meta.classes[k].lo/choice.source.hours,hi:meta.classes[k].hi/choice.source.hours};}});
-  // Warm the next period.
-  const next=wmsValidTime(meta,choice.time+meta.step,choice.source);
-  if(next!=null)for(const t of wmsTilesInView(choice.source,meta,next,view))void tile(t.url,choice.source,meta).catch(()=>{});
+  // Warm the neighbouring periods (next ones first) while this one stays shown.
+  for(const d of [1,-1,2,3,-2]){
+    const near=wmsValidTime(meta,choice.time+d*meta.step,choice.source);
+    if(near!=null)for(const t of wmsTilesInView(choice.source,meta,near,view))void tile(t.url,choice.source,meta,isCurrent,1+Math.abs(d)).catch(()=>{});
+  }
   return {key:choice.source.id+':'+choice.time,source:choice.source,time:choice.time,run:meta.run,centre,complete:loaded.every(Boolean)};
 }
 export const wmsMetadata=()=>metas;

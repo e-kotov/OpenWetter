@@ -85,9 +85,18 @@ export function seriesValueAt(forecast,key,time,{angle=false}={}){
   return a+(b-a)*f;
 }
 /* ---------- local days (the forecast place's time zone) ---------- */
-const offsetCache=new Map();
-/** UTC offset in seconds of `zone` at instant `seconds`. */
+const offsetCache=new Map(),offsetMemo=new Map();
+/** UTC offset in seconds of `zone` at instant `seconds`. Offsets change only
+ * on quarter-hour boundaries, so results are memoised per 15 minutes
+ * (formatToParts is slow and this runs many times per scrub frame). */
 export function zoneOffset(seconds,zone){
+  const key=zone+'|'+Math.floor(seconds/900),hit=offsetMemo.get(key);
+  if(hit!==undefined)return hit;
+  const value=computeOffset(Math.floor(seconds/900)*900,zone);
+  if(offsetMemo.size>4000)offsetMemo.clear();
+  offsetMemo.set(key,value);return value;
+}
+function computeOffset(seconds,zone){
   let fmt=offsetCache.get(zone);
   if(!fmt){fmt=new Intl.DateTimeFormat('en-US',{timeZone:zone,hourCycle:'h23',year:'numeric',month:'numeric',day:'numeric',
     hour:'numeric',minute:'numeric',second:'numeric'});offsetCache.set(zone,fmt);}

@@ -304,8 +304,15 @@ function updateDays(){
   }
   [...dom.days.children].forEach((b,i)=>{b.classList.toggle('active',i===active);b.setAttribute('aria-pressed',String(i===active));});
 }
+/* Element boxes, read once per layout change instead of every scrub frame. */
+let boxes=null;
+function measure(){
+  boxes??={graphs:dom.graphs.getBoundingClientRect(),meteo:dom.meteo.getBoundingClientRect(),map:dom.map.getBoundingClientRect()};
+  return boxes;
+}
+function relayout(){boxes=null;}
 function updateCursor(){
-  const v=timeView(),r=dom.graphs.getBoundingClientRect(),m=dom.meteo.getBoundingClientRect();
+  const v=timeView(),{graphs:r,meteo:m}=measure();
   const top=r.top-m.top,height=r.height,x=t=>(t-v.start)/(v.end-v.start)*r.width;
   for(const [line,t] of [[dom.cursorLine,state.time],[dom.nowLine,Date.now()/1000]]){
     line.style.top=top+'px';line.style.height=height+'px';line.style.left=Math.round(x(t)-0.5)+'px';
@@ -374,7 +381,7 @@ const painters={field:createPainter(dom.iconCanvas,crossfades.field),rain:create
 let mapRequest=0;
 function requestMap(){if(!mapRequest)mapRequest=requestAnimationFrame(()=>{mapRequest=0;renderMap();});}
 function mapView(){
-  const r=dom.map.getBoundingClientRect();
+  const r=measure().map;
   return {width:r.width,height:r.height,ratio:Math.min(2.5,window.devicePixelRatio||1),zoom:state.map.zoom,
     latitude:state.map.latitude,longitude:state.map.longitude};
 }
@@ -569,7 +576,7 @@ function toggleLayer(id){
 /* ---------- gestures ---------- */
 let gesture=null;
 const pointers=new Map();
-function referencePx(){return dom.map.getBoundingClientRect().width||400;}
+function referencePx(){return measure().map.width||400;}
 function startScrub(x,y,t){
   const {min,max}=timeBounds(),range=max-min,ref=referencePx();
   return createScrub({start:state.time,min,max,x,y,t,
@@ -1001,8 +1008,9 @@ function wire(){
     const step={ArrowRight:3600,ArrowLeft:-3600,ArrowUp:900,ArrowDown:-900}[e.key];
     if(step){e.preventDefault();setTime(state.time+step);}
   });
-  window.addEventListener('resize',()=>{requestGraphs();requestMap();});
-  if('ResizeObserver' in window)new ResizeObserver(()=>{requestGraphs();requestMap();}).observe(dom.map);
+  window.addEventListener('resize',()=>{relayout();requestGraphs();requestMap();});
+  if('ResizeObserver' in window){const ro=new ResizeObserver(()=>{relayout();requestGraphs();requestMap();});
+    for(const el of [dom.map,dom.meteo,dom.graphs,dom.extremes])ro.observe(el);}
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){void loadIconRun();updateCursor();}});
   wireMapGestures();wireGraphGestures();wireDays();
 }
