@@ -61,8 +61,9 @@ export function decodeCode(layer,code){
 /* ---------- palettes: value-domain colour stops -> 256-entry code LUT ---------- */
 // [value, '#rrggbb', alpha 0..1]. Values outside the first/last stop clamp.
 export const PALETTE_STOPS=Object.freeze({
-  rain:[[0.05,'#a8d8ff',.45],[0.3,'#5aa9ff',.7],[1,'#2364e8',.8],[2.5,'#16a86a',.85],
-    [5,'#e9d335',.9],[10,'#f08a1d',.92],[25,'#e2323c',.95],[60,'#c21fcc',.95]],
+  // Magenta (drizzle) -> blue -> cyan -> green (5 mm/h) -> yellow -> red -> dark red (50+ mm/h).
+  rain:[[0.05,'#c23cd4',.55],[0.3,'#7b22d8',.72],[1,'#2233e0',.8],[2,'#1585ee',.85],[3.5,'#19cfe6',.88],
+    [5,'#22c045',.9],[10,'#e6e01e',.92],[20,'#f07012',.94],[35,'#d0141a',.95],[60,'#760012',.95]],
   snow:[[0.05,'#eef3ff',.45],[0.3,'#cbd8ff',.65],[1,'#9fb1ff',.8],[3,'#7a7cf0',.85],
     [10,'#9b4fd8',.9],[30,'#d23ac0',.92]],
   cloud:[[0,'#ffffff',0],[20,'#eef2f7',.18],[50,'#dfe5ee',.42],[80,'#cdd5e0',.66],[100,'#bfc8d4',.82]],

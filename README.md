@@ -7,13 +7,31 @@ Experimental Android and browser weather application. Real **Deutscher Wetterdie
 - **ICON-D2 model forecast maps (13 layers):** rain and snowfall (15-minute steps), total/low/mid/high cloud cover, 2 m temperature, dew point, relative humidity, sea-level pressure, 10 m wind speed, gusts and wind direction (hourly steps), for the 48 hours of the newest model run. Each layer has its own colour scale and legend with units.
 - **Observed precipitation:** DWD RADOLAN RY 1 km / 5-minute rain-rate composites, up to two days back. Missing scans are shown as missing, never reconstructed.
 - **Radar nowcast:** DWD RADVOR RV, the radar-based extrapolation for the next two hours, shown after the newest observed scan. It is a forecast derived from radar, **not** an observation.
-- **Rain sequence:** one timeline of observed radar → radar nowcast → ICON-D2 model rain, each segment labelled with its source.
-- **Official DWD warnings:** active warning areas for the selected time as an optional map overlay, and the warnings that cover the selected place listed above the charts.
-- **Synchronized charts:** for ICON-D2, rain, temperature, cloud cover, wind, humidity and pressure at a place come from the same published grid as the map; the Open-Meteo DWD point API fills anything the grid series lacks and provides ICON-EU, ICON Global and the past-hours estimates.
-- Layer menu, model selection and comparison, saved places, touch time scrubbing and an optional ICON-EU hourly rain map (DWD WMS).
+- **One precipitation layer through time:** observed radar up to the newest scan, then the radar nowcast, then ICON-D2 model rain. The label at the top of the map names the source of the frame on screen (Radar · Nowcast · ICON-D2 run).
+- **Official DWD warnings:** active warning areas for the selected time as a map layer, and warnings covering the place as a coloured strip in the graphs.
+- **7-day meteogram:** thin graphs on one shared time axis from today 00:00: *Everyday* (sky bands, cloud on 14 pressure levels from 1000 to 200 hPa, rain, wind speed and gusts) and *Temperature* (line, change since yesterday's run, freezing level), plus optional Wind, Pressure and Humidity graphs. Daily maximum/minimum row, day strip and a readout of the selected time.
+- **Seamless ICON point forecast:** ICON-D2 (2 km, 48 h) → ICON-EU (7 km, 5 days) → ICON Global (11 km) from one Open-Meteo request; red marks show where the model changes. Each model can also be shown alone, or all three compared on one page.
+- Saved places, place search, units, and a customisable map layer bar and graph set.
 - Android API 26+ WebView shell with system status-bar cutout/inset handling.
 
-**Weather source distinction:** ICON-D2 maps are model forecasts; RADOLAN RY is observed radar; the RADVOR nowcast is a radar-based forecast; Meteosat clouds are observed satellite images. They are not interchangeable, do not share identical time windows, and the map label always names the source shown. ICON-EU and ICON Global charts use DWD ICON point forecasts via Open-Meteo, **not** full raster layers (ICON-EU additionally offers the hourly WMS rain map).
+**Weather source distinction:** ICON-D2 maps are model forecasts; RADOLAN RY is observed radar; the RADVOR nowcast is a radar-based forecast. They are not interchangeable and the map label always names the source shown. ICON-EU and ICON Global are used for the graphs only (DWD ICON point forecasts via Open-Meteo); the maps are ICON-D2 and end with the newest ICON-D2 run (48 h).
+
+## Controls
+
+| Gesture | Effect |
+|---|---|
+| One finger sideways on the map | Change the time in fine steps (default 1.2 days per full-width swipe); right is later |
+| One finger up or down | Change the time in coarse steps (default 120 % of the 7-day range per full-width swipe); up is later |
+| Mixed directions | Each movement counts along its own dominant direction, so one swipe can go coarse, then fine. A quick release keeps going briefly. A 6 px touch slop prevents accidental scrubs. |
+| Two fingers | Move and zoom the map. The forecast place follows the square in the centre ("Panned location"). |
+| Tap a graph | Jump to that time |
+| Hold a graph | Compare · Edit range · Edit graph (show/hide elements) · Add · Delete · Help |
+| Tap the clock | Back to now |
+| Double-tap a day | Compare ICON-D2, ICON-EU and ICON |
+| Layer bar | Tap icons to switch layers (precipitation + one model field + warnings); ⊕ chooses and orders them; the orange button picks the model for the graphs |
+| Colour bar | Opacity of the layer |
+
+Swipe speeds (in % of range, days or hours per full-width swipe) and time stepping are in Settings → Swipe settings. On desktop: mouse wheel zooms, Ctrl/⌘-drag or right-drag pans, arrow keys step the time.
 
 ## Installation
 
@@ -57,25 +75,24 @@ When the radar, nowcast or warnings index is unavailable, the app hides that fea
 - **Correct geography:** the base map is Web Mercator and the data grid is regular latitude/longitude. The GPU converts every screen pixel from Mercator y to latitude and then to the grid row, instead of stretching whole tiles.
 - **Colours:** a 256-entry palette per layer maps codes to colours; no-data and dry pixels are transparent. Wind direction is drawn as sparse arrows (pointing where the wind blows to) over a faint direction colour wheel.
 - **Memory:** decoded images are released right after upload; GPU textures are kept in a size-bounded least-recently-used cache and deleted on eviction. Tall radar chunks are split to respect the device's maximum texture size. Without WebGL the app falls back to a simpler Canvas 2D renderer.
-- **Persistent cache:** downloaded tiles and chart series are immutable and stored compressed in the browser/Android WebView CacheStorage, so revisited times and places need no new transfer, even after restarting the app (as long as Android keeps the site data). Settings offer optional downloads of the visible radar area for the past 6 hours and of the active ICON-D2 layer for 48 hours. Basemap imagery is not bulk downloaded.
+- **Persistent cache:** downloaded tiles and chart series are immutable and stored compressed in the browser/Android WebView CacheStorage, so revisited times and places need no new transfer, even after restarting the app (as long as Android keeps the site data). The menu's *Offline maps* entry downloads the visible radar area for the past 6 hours and ICON-D2 rain for 48 hours. Basemap imagery is not bulk downloaded.
 
-## Time axes
+## Time axis
 
-- **Forecast · future:** the selected ICON-D2 layer at its own step (15 minutes for rain/snow, hourly otherwise) from now to the end of the newest run. For a time before the newest run's first frame, the matching 3-hour slice of an earlier run is read from the history index, which is fetched only when needed.
-- **Forecast · Past:** the same ICON-D2 map layer for the past five days up to now, built from earlier model runs (the first 3 hours of each run, from the history index, downloaded only when this range is chosen). These are model values, not observations. The charts keep the forecast window, since chart series for past days are not published.
-- **Radar · past:** observed scans with 2-hour, 6-hour or 2-day windows. Each timestamp is a real UTC observation time.
-- **Radar → nowcast → forecast:** observed scans, then the nowcast frames after the newest scan, then ICON-D2 rain (or ICON-EU hourly rain when that model is selected). The timeline label names the source of each frame.
-- An optional 260 ms crossfade blends the previous and next real frames visually; no intermediate weather is computed. The previous frame stays on screen until the next one has loaded. Smooth transitions can be switched off in Settings; the system Reduced Motion preference is honoured.
+- One 7-day axis for graphs and map, from today 00:00 to the end of day 7 in the place's time zone. The time moves in whole minutes ("smooth"), or in data steps if chosen in Swipe settings.
+- **Map rain:** for a time up to the newest radar scan, the observed scan at or before it; then nowcast frames; then the ICON-D2 rain frame (15-minute steps) to the end of the newest run. Before the radar history, earlier ICON-D2 runs are read from the history index, fetched only when needed.
+- **Map fields** (cloud, temperature, pressure, wind, …): the ICON-D2 frame nearest the selected time at the layer's own step; earlier hours from earlier runs' history slices.
+- An optional 260 ms crossfade blends the previous and next real frames visually; no intermediate weather is computed. The previous frame stays on screen until the next one has loaded; the map label then adds "· loading". Smooth transitions can be switched off in Settings; the system Reduced Motion preference is honoured.
 
-## Charts and past hours
+## Graphs
 
-In radar and rain-sequence modes the charts include recent past hours as **archived ICON model estimates** from Open-Meteo's DWD API (`past_hours=9`), with a marked *now* boundary and muted styling. Past precipitation bars are modelled rainfall, **not** measured radar totals, and nothing is extrapolated when data are missing.
+Graph values come from Open-Meteo's DWD API (`/v1/dwd-icon`, `models=icon_d2,icon_eu,icon_global`, `past_days=1`, `forecast_days=7`), stitched per hour from the finest model that has data. The temperature change band compares with yesterday's run from Open-Meteo's previous-runs API (`temperature_2m_previous_day1`). Hours before now are model values from the same runs, not observations. The last response per place is kept for 12 hours as an offline fallback.
 
 ## Tests
 
 ```sh
 node --test web/tests/*.test.mjs
-python3 web/tests/browser_test.py   # needs Playwright and a Chromium/Chrome (OPENWETTER_CHROMIUM=path)
+python3 web/tests/browser_test.py   # needs Playwright and a Chromium/Chrome (OPENWETTER_CHROMIUM=path; screenshots to OPENWETTER_CAPTURES or ./screenshots)
 cargo clippy --release --manifest-path tools/icon-rs/Cargo.toml
 ```
 

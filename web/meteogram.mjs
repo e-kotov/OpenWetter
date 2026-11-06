@@ -152,7 +152,7 @@ function drawEveryday(g,f,view,days,cfg,ctxInfo){
     const n=PRESSURE_LEVELS.length,top=h*.06,bottom=h*.94,spacing=(bottom-top)/(n-1);
     const yOf=p=>bottom-Math.log(1000/p)/Math.log(1000/PRESSURE_LEVELS.at(-1))*(bottom-top);
     for(const p of PRESSURE_LEVELS){
-      const cy=yOf(p),values=d.get(`cloud_cover_${p}hPa`);
+      const cy=yOf(p),values=smoothed(d.get(`cloud_cover_${p}hPa`));
       for(const run of runs(d.time,values,x,()=>cy)){
         const half=run.map(([xx,,t,v])=>[xx,v/100*spacing*1.05]);
         if(half.every(([,hh])=>hh<.35))continue;
@@ -181,6 +181,12 @@ function drawEveryday(g,f,view,days,cfg,ctxInfo){
   drawWarnings(g,ctxInfo.warnings,el);
   drawYScale(g,[w0,(w0+w1)/2,w1],ws,el,v=>String(Math.round(ctxInfo.wind(v))));
   drawLegend(g,[el.cloudLayers||el.totalCloud?['cloud']:null,el.precip?['rain']:null,el.wind||el.gust?['wind']:null].filter(Boolean),el);
+}
+/** ±2 h weighted smoothing (1-2-3-2-1) so hourly cloud levels form lens shapes. */
+function smoothed(values){
+  const w=[1,2,3,2,1];
+  return values.map((v,i)=>{if(!finite(v))return null;let sum=0,n=0;
+    for(let k=-2;k<=2;k++){const x=values[i+k];if(finite(x)){sum+=x*w[k+2];n+=w[k+2];}}return sum/n;});
 }
 function autoRange(values,pad=.08,minSpan=2){
   const v=values.filter(finite);if(!v.length)return [0,1];
