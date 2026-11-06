@@ -11,16 +11,25 @@ import {weatherDiskCache} from './frame-cache.mjs';
 
 const BASE='https://maps.dwd.de/geoserver/dwd/';
 export const WMS_RAIN=Object.freeze([
-  Object.freeze({id:'eu1',layer:'Icon-eu_reg00625_fd_sl_TOTPREC01H',hours:1,horizon:78,model:'ICON-EU',maxZoom:8}),
-  Object.freeze({id:'eu3',layer:'Icon-eu_reg00625_fd_sl_TOTPREC03H',hours:3,horizon:120,model:'ICON-EU',maxZoom:8}),
-  Object.freeze({id:'glob6',layer:'Icon_reg025_fd_sl_TOTPREC06H',hours:6,horizon:180,model:'ICON',maxZoom:7}),
+  Object.freeze({id:'eu1',layer:'Icon-eu_reg00625_fd_sl_TOTPREC01H',hours:1,horizon:78,model:'ICON-EU',maxZoom:8,openMeteo:'dwd_icon_eu'}),
+  Object.freeze({id:'eu3',layer:'Icon-eu_reg00625_fd_sl_TOTPREC03H',hours:3,horizon:120,model:'ICON-EU',maxZoom:8,openMeteo:'dwd_icon_eu'}),
+  Object.freeze({id:'glob6',layer:'Icon_reg025_fd_sl_TOTPREC06H',hours:6,horizon:180,model:'ICON',maxZoom:7,openMeteo:'dwd_icon'}),
 ]);
 const iso=t=>new Date(t*1000).toISOString().replace('.000Z','Z');
 const parseISO=s=>{const t=Date.parse(s);return Number.isFinite(t)?Math.round(t/1000):null;};
 const STEPS={PT1H:3600,PT3H:10800,PT6H:21600};
 
-/** Time range, step and newest run of one layer from its GetCapabilities XML. */
-export function parseWmsCapabilities(xml,layer,{now=Date.now()/1000}={}){
+/** Which forecast run to draw. The charts come from Open-Meteo, so prefer the
+ * run Open-Meteo uses (`prefer`, its newest run start; long forecasts only come
+ * from the 00/06/12/18 UTC runs). DWD lists a run while its files still
+ * arrive, so without that hint skip 6-hourly runs younger than 5 hours. */
+export function pickRun(runs,{now=Date.now()/1000,prefer=null}={}){
+  const six=runs.filter(t=>t%21600===0).sort((a,b)=>b-a);
+  if(Number.isFinite(prefer)){const r=six.find(t=>t<=prefer);if(r!=null)return r;}
+  return six.find(t=>now-t>=5*3600)??six.at(-1)??null;
+}
+/** Time range, step and chosen run of one layer from its GetCapabilities XML. */
+export function parseWmsCapabilities(xml,layer,{now=Date.now()/1000,prefer=null}={}){
   if(typeof xml!=='string'||xml.length>500000||/<!DOCTYPE|<!ENTITY/i.test(xml))throw new Error('Invalid DWD WMS metadata');
   const at=xml.search(new RegExp(`<Name>(dwd:)?${layer.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}</Name>`));
   if(at<0)throw new Error(`DWD layer ${layer} unavailable`);
@@ -30,7 +39,7 @@ export function parseWmsCapabilities(xml,layer,{now=Date.now()/1000}={}){
   const first=parseISO(range[0]),last=parseISO(range[1]),step=STEPS[range[2]];
   const runs=(dim('REFERENCE_TIME')||'').split(',').map(s=>parseISO(s.trim()))
     .filter(t=>t!==null&&t<=now+120&&now-t<=24*3600).sort((a,b)=>b-a);
-  const run=runs.find(t=>t%21600===0)??runs[0];
+  const run=pickRun(runs,{now,prefer});
   if(first==null||last==null||!step||last<first||run==null)throw new Error(`DWD layer ${layer}: no usable forecast run`);
   return {first,last,step,run};
 }
@@ -109,6 +118,14 @@ export function recolorPixels(rgba,classes,hours,lut){
 }
 
 /* ---------- browser side: metadata, tiles, painting ---------- */
+const omRuns=new Map();
+/** Start of the newest run Open-Meteo serves for a model, or null. */
+function openMeteoRun(model){
+  if(!omRuns.has(model))omRuns.set(model,fetch(`https://api.open-meteo.com/data/${model}/static/meta.json`,{cache:'no-store'})
+    .then(r=>r.ok?r.json():null).then(j=>Number.isFinite(j?.last_run_initialisation_time)?j.last_run_initialisation_time:null)
+    .catch(()=>null).finally(()=>setTimeout(()=>omRuns.delete(model),5*60_000)));
+  return omRuns.get(model);
+}
 let metas=null,metaPromise=null,metaTime=0;
 export async function loadWmsMetadata({force=false}={}){
   if(!force&&metas&&Date.now()-metaTime<10*60_000)return metas;
@@ -116,10 +133,11 @@ export async function loadWmsMetadata({force=false}={}){
     const out={};
     await Promise.all(WMS_RAIN.map(async s=>{
       try{
-        const [caps,legend]=await Promise.all([
+        const [caps,legend,prefer]=await Promise.all([
           fetch(`${BASE}${s.layer}/wms?service=WMS&version=1.3.0&request=GetCapabilities`,{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.text();}),
-          fetch(`${BASE}wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetLegendGraphic&FORMAT=application/json&LAYER=dwd:${s.layer}`).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})]);
-        out[s.id]={...parseWmsCapabilities(caps,s.layer),classes:parseWmsLegend(legend)};
+          fetch(`${BASE}wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetLegendGraphic&FORMAT=application/json&LAYER=dwd:${s.layer}`).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}),
+          openMeteoRun(s.openMeteo)]);
+        out[s.id]={...parseWmsCapabilities(caps,s.layer,{prefer}),classes:parseWmsLegend(legend)};
       }catch{/* this source stays unavailable */}
     }));
     metas=out;metaTime=Date.now();return out;

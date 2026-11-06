@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {WMS_RAIN,parseWmsCapabilities,parseWmsLegend,classRate,wmsValidTime,chooseWmsSource,wmsTileURL,recolorPixels} from '../dwd-wms.mjs';
+import {WMS_RAIN,pickRun,parseWmsCapabilities,parseWmsLegend,classRate,wmsValidTime,chooseWmsSource,wmsTileURL,recolorPixels} from '../dwd-wms.mjs';
 import {paletteLUT} from '../tile-service.mjs';
 
 const run=Date.UTC(2026,10,6,12)/1000,now=run+3*3600;
@@ -11,12 +11,23 @@ const caps=(layer,first,last,step)=>`<WMS_Capabilities><Capability><Layer><Layer
 const legend=entries=>({Legend:[{rules:[{symbolizers:[{Raster:{colormap:{type:'intervals',entries}}}]}]}]});
 const LAWA=legend([{quantity:'0.09',color:'#FFFFFF',opacity:'0.0'},{quantity:'1.99',color:'#C0C0C0'},{quantity:'4.99',color:'#FEFEC0'},{quantity:'5000.0',color:'#606060'}]);
 
-test('Capabilities: time range, step and newest 6-hourly run of the requested layer',()=>{
-  const m=parseWmsCapabilities(caps('Icon-eu_reg00625_fd_sl_TOTPREC03H','2026-11-05T09:00:00.000Z','2026-11-11T12:00:00.000Z','PT3H'),
-    'Icon-eu_reg00625_fd_sl_TOTPREC03H',{now});
-  assert.deepEqual(m,{first:Date.UTC(2026,10,5,9)/1000,last:Date.UTC(2026,10,11,12)/1000,step:10800,run});
+test('Capabilities: time range, step and the run Open-Meteo uses for the charts',()=>{
+  const xml=caps('Icon-eu_reg00625_fd_sl_TOTPREC03H','2026-11-05T09:00:00.000Z','2026-11-11T12:00:00.000Z','PT3H');
+  const m=parseWmsCapabilities(xml,'Icon-eu_reg00625_fd_sl_TOTPREC03H',{now,prefer:run+3*3600});
+  assert.deepEqual(m,{first:Date.UTC(2026,10,5,9)/1000,last:Date.UTC(2026,10,11,12)/1000,step:10800,run},'15z charts: long range from 12z');
+  assert.equal(parseWmsCapabilities(xml,'Icon-eu_reg00625_fd_sl_TOTPREC03H',{now}).run,run-6*3600,
+    'without the hint a 3-hour-old run may still be incomplete: previous run');
   assert.throws(()=>parseWmsCapabilities(caps('Other','x','y','PT1H'),'Icon-eu_reg00625_fd_sl_TOTPREC03H',{now}),/unavailable/);
   assert.throws(()=>parseWmsCapabilities('<!DOCTYPE x>','a',{now}),/Invalid/);
+});
+test('Run choice: Open-Meteo hint, else the newest 6-hourly run at least 5 hours old',()=>{
+  const runs=[run-12*3600,run-9*3600,run-6*3600,run];
+  assert.equal(pickRun(runs,{now,prefer:run}),run);
+  assert.equal(pickRun(runs,{now,prefer:run-3600}),run-6*3600);
+  assert.equal(pickRun(runs,{now:run+6*3600}),run);
+  assert.equal(pickRun(runs,{now:run+3600}),run-6*3600);
+  assert.equal(pickRun([run],{now:run+3600}),run,'only run left');
+  assert.equal(pickRun([],{now}),null);
 });
 test('Legend classes: upper bounds, dry first class; class rates per hour',()=>{
   const c=parseWmsLegend(LAWA);
