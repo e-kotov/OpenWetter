@@ -1,366 +1,170 @@
-import {
-  MODELS, MODEL_IDS, VARIABLES, DEFAULT_PLACES, clamp, wrappedLongitude, clampLatitude,
-  forecastURL, parseForecast, nearestIndex, valueAtTime, axisLimits, hourFloor,
-  pickGestureAxis, scrubTimestamp, forecastBounds, timelinePosition, placeKey,
-  radarHistoryStartIndex,
-  mercator, unmercator, dwdWmsTileURL, DWD_SATELLITE_CLOUDS,
-} from './logic.mjs';
-import {DATA_BASE,ICON_LAYERS,LAYER_INFO,legendFor,decodeCode,parseLatest,parseIconManifest,iconFrame,
-  iconAdjacentChunk,chooseRun,parseHistoryIndex,parseRadarIndex,radarFrame,parseNowcastIndex,nowcastFrame,
-  parseWarnings,activeWarnings,warningsCovering} from './tile-service.mjs';
+import {DEFAULT_PLACES,clamp,wrappedLongitude,clampLatitude,mercator,unmercator,placeKey,nearestIndex} from './logic.mjs';
+import {DATA_BASE,LAYER_INFO,PALETTE_STOPS,decodeCode,parseLatest,parseIconManifest,iconFrame,iconAdjacentChunk,chooseRun,
+  parseHistoryIndex,parseRadarIndex,radarFrame,parseNowcastIndex,nowcastFrame,parseWarnings,activeWarnings,
+  warningsCovering} from './tile-service.mjs';
 import {fetchPointer,fetchImmutableJSON,tileBlob} from './tile-loader.mjs';
 import {createRasterRenderer,drawWindArrows,visibleFrameTiles} from './raster-renderer.mjs';
-import {composeIconD2Forecast,downloadGridSeries} from './point-series.mjs';
 import {weatherDiskCache} from './frame-cache.mjs';
-import {fetchIconEuCapabilities,paintIconEuWms,iconEuValidTime} from './wms-eu.mjs';
 import {createWeatherCrossfade} from './frame-transition.mjs';
-import {continuousWeatherTimeline,continuousCursorIndex} from './continuous-timeline.mjs';
-import {splitModelHistory,chartSeries} from './historical-charts.mjs';
+import {pointForecastURL,previousRunURL,parsePointForecast,attachPreviousRun,seriesValueAt,chartDays,dailyExtremes,
+  POINT_MODELS,MODEL_LABELS} from './forecast.mjs';
+import {GRAPH_TYPES,RANGE_LABELS,defaultGraph,drawGraph} from './meteogram.mjs';
+import {DEFAULT_SWIPE,secondsPerPixel,validSwipeSetting,createScrub,steppedTime} from './gestures.mjs';
+import {ICONS} from './icons.mjs';
 
-const el=id=>document.getElementById(id);
-const fields=[
-  'appRoot','placesBtn','headerPlace','viewForecast','viewCompare','settingsBtn','searchForm','citySearch',
-  'modelSelect','locateBtn','locationName','modelDescription','heroTemp','heroTime','quickRain','quickWind',
-  'quickCloud','message','warningsList','plotsHeading','horizonPast','horizon48','horizon120','graphStack','playBtn','timeLabel',
-  'timeRange','timeSlider','startLabel','endLabel','settingsPanel','horizontalSpeed','horizontalOutput',
-  'verticalSpeed','verticalOutput','opacitySlider','opacityOutput','cloudOpacitySlider','cloudOpacityOutput',
-  'map','baseTiles','iconCanvas','iconTransitionCanvas','radarCanvas','radarTransitionCanvas','cloudTiles','toggleRain','toggleClouds',
-  'layersBtn','layersBtnLabel','layerPanel','layerList','closeLayers','toggleWarnings','warningsToggleRow','mapLegend','warningsCanvas',
-  'mapPin','pinTemp','mapLayerName','mapModelName','modeContinuous','modeForecast','modeRadar','zoomIn','zoomOut',
-  'boundaryTransitionCanvas','resetView','mapInstruction','radarAttribution','placesDrawer','drawerScrim','closePlaces',
-  'placesList','savePlace','cacheRadarBtn','cacheForecastBtn','cacheProgress','smoothFrames',
-  'forecastHorizonButtons','radarHistoryButtons','radarHours2','radarHours6','radarHours48',
-];
-const dom=Object.fromEntries(fields.map(k=>[k,el(k)]));
-const defaultPlace={...DEFAULT_PLACES[0]};
-const RADAR_WINDOWS=[2,6,48];
-const state={
-  place:defaultPlace, map:{latitude:defaultPlace.latitude,longitude:defaultPlace.longitude,zoom:7},
-  favorites:DEFAULT_PLACES.map(x=>({...x})),
-  model:'icon_d2',view:'forecast',mode:'forecast',continuousCursor:null,horizon:48,
-  horizontalHours:4,verticalHours:24,radarOpacity:.75,cloudOpacity:.5,showRain:false,showClouds:false,
-  anchor:hourFloor(Date.now()/1000),selectedTime:hourFloor(Date.now()/1000),
-  forecasts:{},pastForecasts:{},forecast:null,forecastIndex:0,loadingModels:new Set(),modelErrors:{},
-  radar:null,radarIndex:0,radarHours:6,displayedRadarTime:null,playing:false,
-  radarUnavailable:false,nowcast:null,nowcastUnavailable:false,
-  warnings:null,warningsUnavailable:false,showWarnings:true,
-  smoothFrames:true,
-  latest:null,icon:null,iconError:null,history:null,pastModel:false,iconLayer:'precip',
-  gridSeries:null,euWms:null,euWmsError:null,
-};
-let fetchEpoch=0;
-const fetchControllers=new Map();
-let playTimer=null,mapRedrawRequest=0,graphRedrawRequest=0,forecastCursorRequest=0;
-let cloudWarningIssued=false,pointSeriesEpoch=0,forecastPaintEpoch=0;
-let cacheWarmupController=null,cacheWarmupKind=null;
-let euMetadataLoading=null,forecastCanvasSource='';
-const pointers=new Map();
-let drag=null;
-const FORECAST_MAX_AGE=45*60_000;
-const STORAGE='openwetter.settings.v2';
+const $=id=>document.getElementById(id);
+const dom=Object.fromEntries(['appRoot','placeBtn','placeName','modelName','infoBtn','moreBtn','meteo','extremes','graphs','days',
+  'readout','clockBtn','readTime','readTemp','readRain','readWind','unitTemp','unitRain','unitWind','windDirIcon','nowLine','cursorLine',
+  'map','baseTiles','iconCanvas','iconTransitionCanvas','radarCanvas','radarTransitionCanvas','warningsCanvas','mapChip','toast',
+  'layerBar','sourceBtn','layerButtons','editLayersBtn','legend','legendBar','legendTicks','mapCredit','scrim','drawer','searchForm',
+  'searchInput','placesList','addPlaceBtn','locateBtn','settingsBtn','offlineBtn','helpBtn','popupMenu','dialogLayer','page'].map(k=>[k,$(k)]));
 const params=new URLSearchParams(location.search);
-// After Android drops and restores the GL context every tile is reloaded and redrawn.
-const renderer=createRasterRenderer({forceCanvas:params.has('canvas2d'),
-  onContextRestored:()=>{for(const p of Object.values(painters))p.reset();requestMap();}});
-const crossfades={
-  forecast:createWeatherCrossfade(dom.iconCanvas,dom.iconTransitionCanvas,{
-    durationMs:260,opacity:()=>1,enabled:()=>state.smoothFrames
-  }),
-  radar:createWeatherCrossfade(dom.radarCanvas,dom.radarTransitionCanvas,{
-    durationMs:260,opacity:()=>state.radarOpacity,enabled:()=>state.smoothFrames
-  })
-};
-function mapViewKey(layer,width,height,ratio,map,extra=''){
-  return [layer,width,height,ratio,map.zoom,map.latitude.toFixed(6),
-    map.longitude.toFixed(6),extra].join('|');
-}
+const STORAGE='openwetter.ui.v3';
+const html=(s,...v)=>s.reduce((a,x,i)=>a+x+(i<v.length?String(v[i]).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])):''),'');
+const icon=name=>`<span class="icon">${ICONS[name]||''}</span>`;
+for(const node of document.querySelectorAll('[data-icon]'))node.innerHTML=ICONS[node.dataset.icon]||'';
 
+/* ---------- map layers in the bottom bar ---------- */
+const LAYERS=Object.freeze({
+  precip:{label:'Precipitation',icon:'rain',kind:'rain'},
+  cloud_total:{label:'Total cloud',icon:'cloud',kind:'field'},
+  temperature:{label:'Temperature',icon:'thermo',kind:'field'},
+  pressure:{label:'Pressure (MSL)',icon:'pressure',kind:'field'},
+  wind_speed:{label:'Wind speed',icon:'wind',kind:'field'},
+  wind_direction:{label:'Wind vectors',icon:'vectors',kind:'field'},
+  warnings:{label:'DWD warnings',icon:'warning',kind:'warnings'},
+  wind_gust:{label:'Wind gusts',icon:'gust',kind:'field'},
+  snow:{label:'Snowfall',icon:'snow',kind:'field'},
+  cloud_low:{label:'Low cloud',icon:'cloudLow',kind:'field'},
+  cloud_mid:{label:'Mid cloud',icon:'cloud',kind:'field'},
+  cloud_high:{label:'High cloud',icon:'cloudHigh',kind:'field'},
+  humidity:{label:'Relative humidity',icon:'humidity',kind:'field'},
+  dew_point:{label:'Dew point',icon:'dew',kind:'field'},
+});
+const DEFAULT_BAR=['precip','cloud_total','temperature','pressure','wind_speed','wind_direction','warnings'];
+const UNIT_OPTIONS={temperature:['°C','°F'],precipitation:['mm/h','in/h'],wind:['km/h','m/s','kt','mph','bft'],pressure:['hPa','kPa','inHg']};
+const SOURCE_OPTIONS=[
+  {id:'seamless',label:'DWD ICON',note:'ICON-D2 2 km → ICON-EU 7 km → ICON 11 km'},
+  {id:'icon_d2',label:'DWD ICON-D2',note:'Germany and neighbours, 2 km, 48 h'},
+  {id:'icon_eu',label:'DWD ICON-EU',note:'Europe, 7 km, 5 days'},
+  {id:'icon_global',label:'DWD ICON',note:'Global, 11 km, 7 days'},
+];
+
+/* ---------- state ---------- */
+const defaultPlace={...DEFAULT_PLACES[0]};
+const state={
+  place:defaultPlace,favorites:DEFAULT_PLACES.map(p=>({...p})),
+  map:{latitude:defaultPlace.latitude,longitude:defaultPlace.longitude,zoom:5.7},
+  bar:[...DEFAULT_BAR],rain:true,field:null,warningsOn:true,lastPicked:'precip',
+  graphs:[defaultGraph('everyday'),defaultGraph('temperature')],
+  swipe:structuredClone(DEFAULT_SWIPE),units:{temperature:'°C',precipitation:'mm/h',wind:'km/h',pressure:'hPa'},
+  source:'seamless',opacity:{rain:.85,field:.8},smoothFrames:true,
+  time:Math.floor(Date.now()/60000)*60,point:null,pointError:null,pointLoading:false,
+  latest:null,icon:null,iconError:null,history:null,radar:null,nowcast:null,warnings:null,
+};
 function save(){
-  try{localStorage.setItem(STORAGE,JSON.stringify({place:state.place,favorites:state.favorites,
-    model:state.model,horizon:state.horizon,horizontalHours:state.horizontalHours,
-    verticalHours:state.verticalHours,radarOpacity:state.radarOpacity,cloudOpacity:state.cloudOpacity,
-    showRain:state.showRain,showClouds:state.showClouds,iconLayer:state.iconLayer,showWarnings:state.showWarnings,
-    radarHours:state.radarHours,smoothFrames:state.smoothFrames}));}catch{/* Browsers may deny storage. */}
+  try{localStorage.setItem(STORAGE,JSON.stringify({place:state.place,favorites:state.favorites,map:state.map,bar:state.bar,
+    rain:state.rain,field:state.field,warningsOn:state.warningsOn,lastPicked:state.lastPicked,graphs:state.graphs,swipe:state.swipe,
+    units:state.units,source:state.source,opacity:state.opacity,smoothFrames:state.smoothFrames}));}catch{/* storage may be denied */}
 }
-function validPlace(p){return p&&typeof p.name==='string'&&p.name.length>0&&p.name.length<150&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=85&&Math.abs(p.longitude)<=180;}
+const validPlace=p=>p&&typeof p.name==='string'&&p.name.length>0&&p.name.length<150&&Number.isFinite(p.latitude)&&
+  Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=85&&Math.abs(p.longitude)<=180;
 function loadPreferences(){
   try{
     const p=JSON.parse(localStorage.getItem(STORAGE)||'{}');
-    if(validPlace(p.place)){
-      state.place={...p.place};state.map.latitude=p.place.latitude;state.map.longitude=p.place.longitude;
-    }
-    if(Array.isArray(p.favorites))state.favorites=p.favorites.filter(validPlace).slice(0,20);
-    if(Object.hasOwn(MODELS,p.model))state.model=p.model;
-    if([48,120].includes(p.horizon))state.horizon=p.horizon;
-    if(RADAR_WINDOWS.includes(p.radarHours))state.radarHours=p.radarHours;
+    if(validPlace(p.place))state.place={...p.place};
+    if(Array.isArray(p.favorites))state.favorites=p.favorites.filter(validPlace).slice(0,30);
+    if(p.map&&[p.map.latitude,p.map.longitude,p.map.zoom].every(Number.isFinite))
+      state.map={latitude:clampLatitude(p.map.latitude),longitude:wrappedLongitude(p.map.longitude),zoom:clamp(p.map.zoom,3,11)};
+    else{state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;}
+    if(Array.isArray(p.bar)){const bar=p.bar.filter(id=>Object.hasOwn(LAYERS,id));if(bar.length)state.bar=[...new Set(bar)];}
+    if(typeof p.rain==='boolean')state.rain=p.rain;
+    if(p.field===null||LAYERS[p.field]?.kind==='field')state.field=p.field??null;
+    if(typeof p.warningsOn==='boolean')state.warningsOn=p.warningsOn;
+    if(Object.hasOwn(LAYERS,p.lastPicked))state.lastPicked=p.lastPicked;
+    if(Array.isArray(p.graphs)){const g=p.graphs.filter(x=>GRAPH_TYPES[x?.type]).map(x=>{const d=defaultGraph(x.type);
+      for(const k of Object.keys(d.elements))if(typeof x.elements?.[k]==='boolean')d.elements[k]=x.elements[k];
+      for(const k of Object.keys(d.ranges))if(x.ranges?.[k]===null||(Array.isArray(x.ranges?.[k])&&x.ranges[k].length===2&&x.ranges[k].every(Number.isFinite)&&x.ranges[k][1]>x.ranges[k][0]))d.ranges[k]=x.ranges[k];
+      return d;});if(g.length)state.graphs=g.slice(0,5);}
+    for(const axis of ['horizontal','vertical'])if(validSwipeSetting(p.swipe?.[axis]))state.swipe[axis]={...p.swipe[axis]};
+    if(['smooth','data'].includes(p.swipe?.stepping))state.swipe.stepping=p.swipe.stepping;
+    for(const [k,opts] of Object.entries(UNIT_OPTIONS))if(opts.includes(p.units?.[k]))state.units[k]=p.units[k];
+    if(SOURCE_OPTIONS.some(s=>s.id===p.source))state.source=p.source;
+    for(const k of ['rain','field'])if(Number.isFinite(p.opacity?.[k]))state.opacity[k]=clamp(p.opacity[k],.1,1);
     if(typeof p.smoothFrames==='boolean')state.smoothFrames=p.smoothFrames;
-    if(Number.isFinite(p.horizontalHours))state.horizontalHours=clamp(p.horizontalHours,1,24);
-    if(Number.isFinite(p.verticalHours))state.verticalHours=clamp(p.verticalHours,4,72);
-    if(Number.isFinite(p.radarOpacity))state.radarOpacity=clamp(p.radarOpacity,.1,1);
-    if(Number.isFinite(p.cloudOpacity))state.cloudOpacity=clamp(p.cloudOpacity,.1,1);
-    if(typeof p.showRain==='boolean')state.showRain=p.showRain;
-    if(typeof p.showClouds==='boolean')state.showClouds=p.showClouds;
-    if(ICON_LAYERS.includes(p.iconLayer))state.iconLayer=p.iconLayer;
-    if(typeof p.showWarnings==='boolean')state.showWarnings=p.showWarnings;
-  }catch{/* Use defaults. */}
-}
-function showMessage(msg,error=false){dom.message.textContent=msg;dom.message.className=`message${msg?' visible':''}${error?' error':''}`;}
-function zone(){return state.forecast?.timezone||'Europe/Berlin';}
-function formatTime(seconds,options={weekday:'short',hour:'2-digit',minute:'2-digit'}){
-  if(!Number.isFinite(seconds))return '—';
-  return new Intl.DateTimeFormat('en-GB',{...options,timeZone:zone()}).format(new Date(seconds*1000));
-}
-function formatUTC(seconds){
-  return Number.isFinite(seconds)?new Date(seconds*1000).toISOString().slice(11,16)+' UTC':'—';
-}
-function shortPlace(name){return name.split(',')[0]||name;}
-function fmt(v,metric){if(v==null)return '—';return metric==='precipitation'?v.toFixed(1):String(Math.round(v));}
-function continuousTime(){return combinedFrame()?.time??state.selectedTime;}
-function chartTime(){return state.mode==='radar'?getRadarTime()??state.anchor:
-  state.mode==='continuous'?continuousTime():state.selectedTime;}
-function metricValue(model,metric){const time=chartTime();return valueAtTime(
-  time<state.anchor?state.pastForecasts[model]:state.forecasts[model],metric,time);}
-function chartBounds(){
-  // The charts have no past-days data, so they keep the forecast window while the map shows past runs.
-  const b=timeBounds({past:false});if(state.mode==='forecast'||state.view==='compare')return b;
-  const start=state.radar?.frames?.[radarWindowStart()]?.time;
-  return {min:Math.min(state.anchor,start??state.anchor-state.radarHours*3600),max:b.max};
+  }catch{/* defaults */}
 }
 
-/* ---------- ICON-D2 runs and frames ---------- */
-function iconManifests(){return [state.icon,...(state.history?.slices||[])].filter(Boolean);}
-/** Map layer for the current display: the rain sequence always uses precip. */
-function displayedIconLayer(){return state.mode==='continuous'?'precip':state.iconLayer;}
-function iconLayerSpec(layer=displayedIconLayer()){return state.icon?.layers?.[layer]||null;}
-/** ICON frame valid at `time`, from the newest run covering it. Earlier
- * runs' 3-hour history slices are loaded lazily, only when needed. */
-function iconFrameAt(layer,time){
-  const manifest=chooseRun(iconManifests(),layer,time);
-  if(manifest)return iconFrame(manifest,layer,time);
-  // Only times before the newest run's first frame can be in a history slice.
-  const start=state.icon?.layers?.[layer]?.start;
-  if(start!=null&&time<start)void loadHistory();
-  return null;
+/* ---------- formatting & units ---------- */
+const zone=()=>state.point?.timezone||'Europe/Berlin';
+const fmtCache=new Map();
+function fmt(seconds,opts){
+  const key=zone()+JSON.stringify(opts);let f=fmtCache.get(key);
+  if(!f){f=new Intl.DateTimeFormat('en-GB',{...opts,timeZone:zone()});fmtCache.set(key,f);}
+  return Number.isFinite(seconds)?f.format(new Date(seconds*1000)):'—';
 }
-/** The history index (one small JSON file listing every slice), fetched at
- * most once per newest run; a missing index just means no history. */
+const hhmm=t=>fmt(t,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+const dayTime=t=>fmt(t,{weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+const utcHour=t=>Number.isFinite(t)?new Date(t*1000).toISOString().slice(11,13)+'z':'—';
+const conv={
+  temp:v=>state.units.temperature==='°F'?v*9/5+32:v,
+  rain:v=>state.units.precipitation==='in/h'?v/25.4:v,
+  wind:v=>{const u=state.units.wind;if(u==='m/s')return v/3.6;if(u==='kt')return v/1.852;if(u==='mph')return v/1.609344;
+    if(u==='bft')return Math.min(12,Math.round(Math.cbrt((v/3.6/0.836)**2)));return v;},
+  windFromMs:v=>conv.wind(v*3.6),
+  pressure:v=>state.units.pressure==='kPa'?v/10:state.units.pressure==='inHg'?v*0.02953:v,
+};
+const rainText=v=>v==null?'—':conv.rain(v).toFixed(state.units.precipitation==='in/h'?2:1);
+const pressureText=v=>state.units.pressure==='hPa'?String(Math.round(v)):conv.pressure(v).toFixed(state.units.pressure==='kPa'?1:2);
+let toastTimer=0;
+function toast(msg,{error=false,ms=2600}={}){
+  clearTimeout(toastTimer);dom.toast.textContent=msg;dom.toast.className='toast'+(error?' error':'');dom.toast.hidden=!msg;
+  if(msg)toastTimer=setTimeout(()=>{dom.toast.hidden=true;},ms);
+}
+
+/* ---------- the 7-day time axis ---------- */
+function days(){return chartDays(Date.now()/1000,zone());}
+function timeView(){const d=days();return {start:d[0].start,end:d.at(-1).end};}
+function timeBounds(){const v=timeView();return {min:v.start,max:v.end-60};}
+function setTime(t,{snap=true}={}){
+  const {min,max}=timeBounds();
+  const next=clamp(snap?steppedTime(t,state.swipe.stepping,state.swipe.stepping==='smooth'?60:dataStep()):t,min,max);
+  if(next===state.time)return;
+  state.time=next;onTimeChanged();
+}
+function dataStep(){
+  const r=rainSource(state.time);
+  if(state.field)return iconLayerSpec(state.field)?.step||3600;
+  return r==='radar'?300:r==='nowcast'?300:iconLayerSpec('precip')?.step||900;
+}
+function onTimeChanged(){updateReadout();updateCursor();updateDays();requestMap();}
+
+/* ---------- tile service: ICON-D2 runs, history, radar, nowcast, warnings ---------- */
+function iconManifests(){return [state.icon,...(state.history?.slices||[])].filter(Boolean);}
+function iconLayerSpec(layer){return state.icon?.layers?.[layer]||null;}
 let historyLoading=null;
 function loadHistory(){
   const run=state.icon?.runTime,path=state.latest?.history;
   if(run==null||!path||state.history?.forRun===run)return historyLoading;
   if(historyLoading)return historyLoading;
   historyLoading=(async()=>{
-    try{
-      // The index is rewritten before latest.json moves to a new run, so a
-      // fresh fetch after a run change already lists the previous run.
-      const raw=await fetchPointer(DATA_BASE+path,{ttlMs:0});
-      if(state.icon?.runTime!==run)return;
-      // The newest run's own slice duplicates the run at another tile size.
-      state.history={forRun:run,slices:raw?parseHistoryIndex(raw).filter(m=>m.runTime<run):[]};
-      if(pastActive())state.selectedTime=clamp(state.selectedTime,...Object.values(timeBounds()));
-      requestMap();updateTimeUI();updateOverlayUI();
-    }catch{
-      // Unreadable index: no history this session for this run; retried after the next run change.
-      if(state.icon?.runTime===run)state.history={forRun:run,slices:[]};
-    }finally{historyLoading=null;}
+    try{const raw=await fetchPointer(DATA_BASE+path,{ttlMs:0});if(state.icon?.runTime!==run)return;
+      state.history={forRun:run,slices:raw?parseHistoryIndex(raw).filter(m=>m.runTime<run):[]};requestMap();}
+    catch{if(state.icon?.runTime===run)state.history={forRun:run,slices:[]};}
+    finally{historyLoading=null;}
   })();
   return historyLoading;
 }
-/** Earliest time any loaded history slice covers for a layer, or null. */
-function historyStart(layer){
-  const starts=(state.history?.slices||[]).map(m=>m.layers[layer]?.start).filter(Number.isFinite);
-  return starts.length?Math.min(...starts):null;
-}
-function combinedFrames(){
-  const b=forecastBounds(state.anchor,state.horizon),spec=iconLayerSpec('precip');
-  // ICON-EU keeps its hourly WMS rain; every other model's map is ICON-D2.
-  const d2=state.model!=='icon_eu'&&spec;
-  return continuousWeatherTimeline(state.radar?.frames,{historyHours:state.radarHours,now:Date.now()/1000,
-    nowcastFrames:state.nowcast?.frames,
-    start:d2?spec.start:b.min,end:d2?Math.min(b.max,spec.end):b.max,step:d2?spec.step:3600});
-}
-function combinedFrame(){const f=combinedFrames();return f[continuousCursorIndex(f,state.continuousCursor)]||null;}
-const canvasGroup=kind=>kind==='forecast'?'forecast':'radar';
-function setContinuousIndex(index){const frames=combinedFrames(),f=frames[clamp(Math.round(index),0,frames.length-1)];if(!f)return;
-  const previous=combinedFrame();
-  if(state.mode==='continuous'&&previous&&canvasGroup(previous.kind)!==canvasGroup(f.kind))beginBoundaryTransition(canvasGroup(previous.kind),canvasGroup(f.kind));
-  state.continuousCursor=f;if(f.kind==='radar')state.radarIndex=nearestIndex(state.radar.frames.map(x=>x.time),f.time);
-  else if(f.kind==='forecast')state.selectedTime=f.time;
-  updateReadouts();updateTimeUI();requestCursor();requestGraphs();updateOverlayUI();requestMap();}
-let boundaryTarget=null,boundaryVersion=0;
-function beginBoundaryTransition(from,to){
-  const origin=from==='radar'?dom.radarCanvas:dom.iconCanvas,layer=dom.boundaryTransitionCanvas;
-  const w=origin.width,h=origin.height;
-  if(!w||!h){boundaryTarget=null;layer.hidden=true;return;}
-  boundaryTarget=to;boundaryVersion++;
-  layer.width=w;layer.height=h;
-  const c=layer.getContext('2d');c.clearRect(0,0,w,h);c.drawImage(origin,0,0);
-  layer.style.transition='none';layer.style.opacity=String(from==='radar'?state.radarOpacity:1);
-  layer.hidden=false;layer.dataset.fromSource=from;layer.dataset.toSource=to;
-}
-function completeBoundaryTransition(target){
-  if(boundaryTarget!==target)return;
-  const layer=dom.boundaryTransitionCanvas,version=++boundaryVersion;boundaryTarget=null;
-  if(!state.smoothFrames||window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){layer.hidden=true;return;}
-  requestAnimationFrame(()=>{if(version!==boundaryVersion)return;layer.style.transition='opacity 360ms linear';layer.style.opacity='0';});
-  setTimeout(()=>{if(version===boundaryVersion)layer.hidden=true;},400);
-}
-/** The forecast map is ICON-D2 tiles unless ICON-EU rain is selected. */
-function usesD2Map(){return !(state.model==='icon_eu'&&state.iconLayer==='precip');}
-/* ---------- past days: map of earlier ICON-D2 runs (history slices) ---------- */
-const PAST_DAYS=5;
-/** Past days apply to the ICON-D2 forecast map only. */
-function pastModelAvailable(){
-  return state.view==='forecast'&&state.mode==='forecast'&&usesD2Map()&&Boolean(state.icon&&state.latest?.history);
-}
-function pastActive(){return state.pastModel&&pastModelAvailable();}
-/** From the oldest history slice (5 days; optimistic until the index is
- * loaded) up to the current hour, where the forecast range begins. */
-function pastBounds(){
-  const spec=iconLayerSpec(state.iconLayer),max=state.anchor,floor=max-PAST_DAYS*86400;
-  const loaded=state.history?.forRun===state.icon?.runTime;
-  const earliest=loaded?historyStart(state.iconLayer)??spec?.start??max:floor;
-  return {min:Math.min(max,Math.max(floor,earliest)),max};
-}
-function setPastModel(on){
-  on=Boolean(on)&&pastModelAvailable();
-  if(on===state.pastModel&&on===pastActive())return;
-  stopPlay();state.pastModel=on;
-  if(on){
-    void loadHistory();
-    // Start at the latest past time, so scrubbing back walks into the past.
-    const step=timelineStep();state.selectedTime=Math.floor(pastBounds().max/step)*step;
-  }
-  state.selectedTime=clamp(state.selectedTime,...Object.values(timeBounds()));
-  refreshView();updateOverlayUI();
-}
-/** Back to the forecast range (no-op unless past days were on). */
-function leavePast(){
-  if(!state.pastModel)return;
-  state.pastModel=false;state.selectedTime=clamp(state.anchor,...Object.values(timeBounds()));
-}
-function timeBounds({past=pastActive()}={}){
-  if(past)return pastBounds();
-  const b=forecastBounds(state.anchor,state.horizon),spec=iconLayerSpec(state.iconLayer);
-  if(state.mode==='forecast'&&state.model==='icon_d2'&&spec){
-    // History slices can cover times before a fresh run's first frame. Until
-    // the index is loaded, allow the full range when the service has one.
-    const loaded=state.history?.forRun===state.icon.runTime;
-    const earliest=loaded?Math.min(spec.start,historyStart(state.iconLayer)??spec.start):state.latest?.history?b.min:spec.start;
-    b.min=Math.max(b.min,Math.min(earliest,b.max));
-    b.max=Math.max(b.min,Math.min(b.max,spec.end));
-  }
-  return b;
-}
-function timelineStep(){
-  const spec=iconLayerSpec(state.iconLayer);
-  return state.mode==='forecast'&&(state.model==='icon_d2'||pastActive())&&spec?spec.step:3600;
-}
-
-function requestMap(){if(!mapRedrawRequest)mapRedrawRequest=requestAnimationFrame(()=>{mapRedrawRequest=0;renderMap();});}
-function requestGraphs(){if(!graphRedrawRequest)graphRedrawRequest=requestAnimationFrame(()=>{graphRedrawRequest=0;drawGraphs();});}
-function requestCursor(){if(!forecastCursorRequest)forecastCursorRequest=requestAnimationFrame(()=>{forecastCursorRequest=0;updateCursor();});}
-/** Bounded forecast API request; distinguish timeouts from deliberate
- * cancellation (e.g. switching locations). Never surface the browser's
- * misleading "signal is aborted without reason" as a weather-model failure.
- */
-async function getJson(url,signal,ms=25000){
-  const abort=new AbortController();
-  const onAbort=()=>abort.abort(signal?.reason||new DOMException('Request cancelled','AbortError'));
-  if(signal?.aborted)onAbort();
-  else signal?.addEventListener('abort',onAbort,{once:true});
-  const timeout=setTimeout(()=>
-    abort.abort(new DOMException('Forecast request timed out','TimeoutError')),ms);
-  try{
-    const response=await fetch(url,{signal:abort.signal});
-    if(!response.ok)throw new Error(`HTTP ${response.status}`);
-    const json=await response.json();
-    if(json?.error)throw new Error(json.reason||'API rejected request');
-    return json;
-  }catch(error){
-    if(!signal?.aborted&&abort.signal.aborted)
-      throw new Error(`Forecast request timed out after ${Math.round(ms/1000)} seconds`);
-    throw error;
-  }finally{clearTimeout(timeout);signal?.removeEventListener('abort',onAbort);}
-}
-async function getPointForecastJson(url,signal){
-  let last;
-  for(const ms of [25000,35000]){
-    try{return await getJson(url,signal,ms);}
-    catch(error){
-      if(signal?.aborted)throw error;
-      last=error;
-      // Retry timeouts and temporary server/network errors, not invalid requests.
-      if(!/timed out|abort|network|failed to fetch|HTTP (408|429|5\d\d)/i.test(error.message||''))
-        throw error;
-    }
-  }
-  throw last;
-}
-function cacheId(model){return `openwetter.forecast.v2.${model}.${placeKey(state.place)}`;}
-function cachedModel(model){
-  try{
-    const obj=JSON.parse(localStorage.getItem(cacheId(model))||'null');
-    if(obj&&Date.now()-obj.savedAt<12*3600_000)return parseForecast(obj.forecast);
-  }catch{/* Cache missing or incomplete. */}
+/** ICON frame for `layer` nearest to `time` on the layer's own step, from the
+ * newest run covering it (older runs' slices for earlier times). */
+function iconFrameAt(layer,time){
+  const spec=iconLayerSpec(layer);if(!spec)return null;
+  const t=Math.round(time/spec.step)*spec.step;
+  const manifest=chooseRun(iconManifests(),layer,t);
+  if(manifest)return iconFrame(manifest,layer,t);
+  if(t<spec.start)void loadHistory();
   return null;
 }
-async function loadModel(model,epoch=fetchEpoch){
-  // A grid-only ICON-D2 forecast is useful but still needs a point-API attempt
-  // to populate wind. It must not suppress later retries for 45 minutes.
-  if(state.forecasts[model]&&!state.forecasts[model].gridOnly&&
-      Date.now()-state.forecasts[model].fetchedAt<FORECAST_MAX_AGE)return;
-  if(state.loadingModels.has(model))return;
-  const controller=new AbortController();fetchControllers.set(model,controller);
-  state.loadingModels.add(model);delete state.modelErrors[model];renderGraphs();
-  if(model===state.model)showMessage(`Loading DWD ${MODELS[model].label} forecast…`);
-  try{
-    const result=parseForecast(await getPointForecastJson(forecastURL({...state.place,model}),controller.signal));
-    if(controller.signal.aborted||epoch!==fetchEpoch)return;
-    const {forecast,past}=splitModelHistory(result,state.anchor);
-    state.forecasts[model]={...forecast,fetchedAt:Date.now()};
-    state.pastForecasts[model]=past;
-    if(model==='icon_d2')applyGridForecast();
-    try{localStorage.setItem(cacheId(model),JSON.stringify({savedAt:Date.now(),forecast:result}));}catch{/* optional */}
-    if(model===state.model){state.forecast=state.forecasts[model];showMessage('');}
-  }catch(error){
-    if(controller.signal.aborted||epoch!==fetchEpoch)return;
-    const cached=cachedModel(model);
-    // Keep already-available DWD grid graphs, even if the optional point
-    // provider is offline or times out. A point error must not blank them.
-    if(cached){
-      const {forecast,past}=splitModelHistory(cached,state.anchor);
-      state.forecasts[model]={...forecast,fetchedAt:Date.now()};state.pastForecasts[model]=past;
-    }
-    if(model==='icon_d2'&&state.gridSeries)applyGridForecast();
-    const usable=state.forecasts[model];
-    if(usable){
-      state.modelErrors[model]=usable.gridOnly?
-        'Point-API extras (where the grid has none) temporarily unavailable':
-        'Using cached point forecast';
-      if(model===state.model){
-        state.forecast=usable;
-        showMessage(usable.gridOnly?
-          'DWD ICON-D2 charts ready from the map grid; Open-Meteo point data temporarily unavailable.':
-          `${MODELS[model].label}: using cached data until the forecast service responds.`);
-      }
-    }else{
-      state.modelErrors[model]=`Unavailable: ${error.message}`;
-      if(model===state.model){
-        state.forecast=null;
-        showMessage(`${MODELS[model].label}: ${state.modelErrors[model]}`,true);
-      }
-    }
-  }finally{
-    if(epoch===fetchEpoch){state.loadingModels.delete(model);fetchControllers.delete(model);refreshView();}
-  }
-}
-function loadModelsForView(){
-  void loadModel(state.model);
-  if(state.view==='compare')for(const model of MODEL_IDS)void loadModel(model);
-}
-
-/* ---------- tile service pointers ---------- */
 async function loadIconRun({fresh=false}={}){
   const ttlMs=fresh?0:60_000;
   try{
@@ -368,1196 +172,827 @@ async function loadIconRun({fresh=false}={}){
     if(!raw)throw new Error('tile service pointer not found');
     const latest=parseLatest(raw);state.latest=latest;
     if(!latest.icon)throw new Error('no ICON-D2 run published');
-    if(state.icon?.dir!==DATA_BASE+latest.icon.manifest.slice(0,latest.icon.manifest.lastIndexOf('/')+1)){
-      const manifest=parseIconManifest(await fetchImmutableJSON(DATA_BASE+latest.icon.manifest),latest.icon.manifest);
-      // The previous run is not kept: the server deletes its tiles 30 minutes
-      // after this run goes live; its first 3 hours are in the history index.
-      state.icon=manifest;state.iconError=null;state.history=null;
-      await loadPointSeries();
-    }
-    refreshView();buildLayerMenu();
-  }catch(error){
-    state.iconError=error.message;
-    if(!state.icon){
-      updateOverlayUI();requestMap();
-      if(usesD2Map())showMessage('ICON-D2 map tiles unavailable: '+error.message,true);
-    }
-  }finally{
-    // Radar, nowcast and warnings are independent of the ICON pointer; when
-    // latest.json lacks their keys the fixed specification paths are used.
-    void loadRadar(ttlMs);void loadNowcast(ttlMs);void loadWarnings(ttlMs);
-  }
+    const dir=DATA_BASE+latest.icon.manifest.slice(0,latest.icon.manifest.lastIndexOf('/')+1);
+    if(state.icon?.dir!==dir){state.icon=parseIconManifest(await fetchImmutableJSON(DATA_BASE+latest.icon.manifest),latest.icon.manifest);
+      state.iconError=null;state.history=null;}
+  }catch(error){state.iconError=error.message;if(!state.icon)toast('ICON-D2 maps unavailable: '+error.message,{error:true});}
+  finally{void loadRadar(ttlMs);void loadNowcast(ttlMs);void loadWarnings(ttlMs);requestMap();updateChip();}
 }
-/** Judged against the clock now, not when the index was parsed, so a radar
- * feed that stops updating mid-session is flagged. */
-function radarIsStale(){const t=state.radar?.latest;return t==null||Date.now()/1000-t>3600;}
-function pointerURL(key,fallback){return DATA_BASE+(state.latest?.[key]||fallback);}
-async function loadRadar(ttlMs=60_000){
-  try{
-    const raw=await fetchPointer(pointerURL('radar','radar/index.json'),{ttlMs});
-    if(!raw){state.radarUnavailable=true;state.radar=null;afterPointerChange();return;}
+const pointerURL=(key,fallback)=>DATA_BASE+(state.latest?.[key]||fallback);
+async function loadRadar(ttlMs){
+  try{const raw=await fetchPointer(pointerURL('radar','radar/index.json'),{ttlMs});
+    if(!raw){state.radar=null;return;}
     const index=parseRadarIndex(raw);
-    if(state.radar?.latest===index.latest&&state.radar?.frames.length===index.frames.length){state.radarUnavailable=false;updateOverlayUI();return;}
-    const hadRadar=Boolean(state.radar),followLatest=!hadRadar||state.radarIndex>=state.radar.frames.length-1;
-    // A displayed scan that moved into a merged block has new tile URLs under
-    // the same time: make the painter load and draw it again.
-    const shownRadar=painters.radar.shown;
-    if(shownRadar?.source==='radar'&&index.frames.find(f=>f.time===shownRadar.time)?.chunkKey!==shownRadar.chunkKey)painters.radar.reset();
-    state.radar=index;state.radarUnavailable=!index.frames.length;
-    if(followLatest)state.radarIndex=index.frames.length-1;
-    else state.radarIndex=clamp(nearestIndex(index.frames.map(f=>f.time),getRadarTime()??index.latest),0,index.frames.length-1);
-    if(state.mode==='continuous'&&!hadRadar&&index.frames.length)state.continuousCursor={kind:'radar',time:index.latest};
-    afterPointerChange();
-  }catch(error){
-    if(!state.radar){state.radarUnavailable=true;afterPointerChange();}
-  }
+    const shown=painters.rain.shown;
+    if(shown?.source==='radar'&&index.frames.find(f=>f.time===shown.time)?.chunkKey!==shown.chunkKey)painters.rain.reset();
+    state.radar=index.frames.length?index:null;
+  }catch{/* keep the previous index */}
+  finally{requestMap();updateChip();}
 }
-async function loadNowcast(ttlMs=60_000){
-  try{
-    const raw=await fetchPointer(pointerURL('nowcast','nowcast/index.json'),{ttlMs});
-    if(!raw){state.nowcastUnavailable=true;state.nowcast=null;afterPointerChange();return;}
-    const index=parseNowcastIndex(raw);
-    if(state.nowcast?.issued===index.issued)return;
-    state.nowcast=index;state.nowcastUnavailable=false;afterPointerChange();
-  }catch{if(!state.nowcast){state.nowcastUnavailable=true;afterPointerChange();}}
+async function loadNowcast(ttlMs){
+  try{const raw=await fetchPointer(pointerURL('nowcast','nowcast/index.json'),{ttlMs});
+    state.nowcast=raw?parseNowcastIndex(raw):null;}catch{/* keep */}
+  finally{requestMap();}
 }
-async function loadWarnings(ttlMs=60_000){
-  try{
-    const raw=await fetchPointer(pointerURL('warnings','warnings/index.json'),{ttlMs});
-    if(!raw){state.warningsUnavailable=true;state.warnings=null;afterPointerChange();return;}
-    state.warnings=parseWarnings(raw);state.warningsUnavailable=false;projectedWarnings=null;warningsDrawKey='';afterPointerChange();
-  }catch{if(!state.warnings){state.warningsUnavailable=true;afterPointerChange();}}
+async function loadWarnings(ttlMs){
+  try{const raw=await fetchPointer(pointerURL('warnings','warnings/index.json'),{ttlMs});
+    state.warnings=raw?parseWarnings(raw):null;projected=null;warningsKey='';placeWarnings=null;}catch{/* keep */}
+  finally{requestMap();requestGraphs();}
 }
-function afterPointerChange(){
-  buildLayerMenu();updateReadouts();updateTimeUI();requestCursor();requestGraphs();requestMap();
-}
-function refreshPointers(){if(!document.hidden){void loadIconRun();}}
-/** A listed tile that 404s was deleted by a newer publish: re-read every
- * index now (at most every 30 s) instead of waiting for the 2-minute refresh. */
 let lastMissingRefresh=0;
 function refreshAfterMissingTiles(result){
   if(!result?.missing||Date.now()-lastMissingRefresh<30_000)return;
   lastMissingRefresh=Date.now();void loadIconRun({fresh:true});
 }
 
-function updateCacheControls(){
-  dom.cacheRadarBtn.textContent=cacheWarmupKind==='radar'?'Cancel radar download':'Cache visible radar area (past 6 h)';
-  dom.cacheForecastBtn.textContent=cacheWarmupKind==='icon'?'Cancel forecast download':
-    `Cache visible ICON-D2 ${LAYER_INFO[state.iconLayer].label.toLowerCase()} (48 h)`;
-  dom.cacheRadarBtn.disabled=Boolean(cacheWarmupKind&&cacheWarmupKind!=='radar')||!state.radar;
-  dom.cacheForecastBtn.disabled=Boolean(cacheWarmupKind&&cacheWarmupKind!=='icon')||!state.icon;
+/* ---------- precipitation: observed radar, then nowcast, then ICON-D2 ---------- */
+function floorFrame(frames,t,tolerance=150){
+  let lo=0,hi=frames.length-1,best=-1;
+  while(lo<=hi){const m=(lo+hi)>>1;if(frames[m].time<=t+tolerance){best=m;lo=m+1;}else hi=m-1;}
+  return best;
 }
-function mapView(){
-  const r=dom.map.getBoundingClientRect();
-  return {width:r.width,height:r.height,ratio:Math.min(2.5,window.devicePixelRatio||1),
-    zoom:state.map.zoom,latitude:state.map.latitude,longitude:state.map.longitude};
+/** Which source shows rain at time t. */
+function rainSource(t){
+  const r=state.radar;
+  if(r&&t<=r.latest+150&&t>=r.frames[0].time-150)return 'radar';
+  const nc=state.nowcast?.frames;
+  if(nc?.length&&t>(r?.latest??-Infinity)+150&&t<=nc.at(-1).time+150&&t>=nc[0].time-450)return 'nowcast';
+  return 'forecast';
 }
-/** URLs of the visible tiles for every chunk of the active ICON layer, or for
- * the radar chunks in the past 6 h (plus the current nowcast). Disk only. */
-function cacheJobs(kind){
-  const view=mapView(),urls=new Map();
-  const add=frame=>{if(frame)for(const t of visibleFrameTiles(frame,view))urls.set(t.url,frame.source==='icon'?'icon':'radar');};
-  if(kind==='icon'){
-    const spec=iconLayerSpec(state.iconLayer);
-    for(const c of spec?.chunks||[])add(iconFrame(state.icon,state.iconLayer,c.first));
-  }else{
-    const seen=new Set(),since=(state.radar?.latest??0)-6*3600;
-    for(const f of state.radar?.frames||[])if(f.time>=since&&!seen.has(f.chunkKey)){seen.add(f.chunkKey);add(radarFrame(state.radar,f));}
-    if(state.nowcast)add(nowcastFrame(state.nowcast,state.nowcast.frames[0].time));
-  }
-  return [...urls];
-}
-async function preloadWeatherCache(kind){
-  if(cacheWarmupKind===kind){
-    cacheWarmupController?.abort();
-    dom.cacheProgress.textContent='Stopping cache download…';
-    return;
-  }
-  if(cacheWarmupKind)return;
-  const jobs=cacheJobs(kind);
-  if(!jobs.length){
-    dom.cacheProgress.textContent=(kind==='radar'?'Radar':'ICON-D2')+' tiles unavailable for this map view.';
-    return;
-  }
-  const existing=await weatherDiskCache.stats(kind);
-  if(!existing.available){
-    dom.cacheProgress.textContent='Persistent storage unavailable in this WebView. Normal on-demand loading still works.';
-    return;
-  }
-  const controller=new AbortController();
-  cacheWarmupController=controller;cacheWarmupKind=kind;updateCacheControls();
-  const label=kind==='radar'?'Radar':'Forecast';
-  let done=0,errors=0;
-  try{
-    for(const [url,bucket] of jobs){
-      if(controller.signal.aborted)break;
-      try{await tileBlob(url,bucket);}catch{errors++;}
-      done++;
-      dom.cacheProgress.textContent=`${label} ${done}/${jobs.length} tiles${errors?' ('+errors+' failed)':''}…`;
-    }
-    const info=await weatherDiskCache.stats(kind);
-    const mb=(info.bytes/(1024*1024)).toFixed(1);
-    dom.cacheProgress.textContent=controller.signal.aborted?
-      `${label} cache download paused. Already-downloaded tiles remain stored.`:
-      errors?`${label} cached ${done-errors}/${jobs.length} tiles (${mb} MB on device); missing tiles can be retried.`:
-      `${label} ready: ${jobs.length} tiles (${mb} MB compressed) stored on this device.`;
-  }finally{
-    cacheWarmupController=null;cacheWarmupKind=null;updateCacheControls();
-  }
+function rainFrameAt(t){
+  const source=rainSource(t);
+  if(source==='radar'){const i=Math.max(0,floorFrame(state.radar.frames,t));return {source,frame:radarFrame(state.radar,state.radar.frames[i])};}
+  if(source==='nowcast'){const fr=state.nowcast.frames,i=Math.max(0,floorFrame(fr,t));return {source,frame:nowcastFrame(state.nowcast,fr[i].time)};}
+  return {source,frame:state.icon?iconFrameAt('precip',t):null};
 }
 
-function closeDrawer(){dom.placesDrawer.hidden=true;dom.drawerScrim.hidden=true;dom.placesBtn.setAttribute('aria-expanded','false');}
-function openDrawer(){renderPlaces();dom.placesDrawer.hidden=false;dom.drawerScrim.hidden=false;dom.placesBtn.setAttribute('aria-expanded','true');}
-function renderPlaces(){
-  dom.placesList.replaceChildren();
-  state.favorites.forEach((p,i)=>{
-    const row=document.createElement('div');row.className='place-item';
-    if(placeKey(p)===placeKey(state.place))row.classList.add('active');
-    const choose=document.createElement('button');choose.className='choose-place';choose.textContent=p.name;
-    choose.addEventListener('click',()=>{setPlace(p);closeDrawer();});
-    const remove=document.createElement('button');remove.className='remove-place';remove.textContent='×';remove.title=`Remove ${p.name}`;remove.setAttribute('aria-label',`Remove ${p.name}`);
-    remove.addEventListener('click',()=>{state.favorites.splice(i,1);save();renderPlaces();});
-    row.append(choose,remove);dom.placesList.append(row);
-  });
-  const already=state.favorites.some(p=>placeKey(p)===placeKey(state.place));
-  dom.savePlace.disabled=already;dom.savePlace.textContent=already?'✓ Location saved':'☆ Save current location';
-}
-function setPlace(place,{center=true}={}){
-  if(!validPlace(place))return;
-  stopPlay();fetchEpoch++;
-  for(const ctrl of fetchControllers.values())ctrl.abort();fetchControllers.clear();
-  state.loadingModels.clear();state.modelErrors={};state.forecasts={};state.pastForecasts={};state.forecast=null;
-  state.gridSeries=null;pointSeriesEpoch++;
-  state.anchor=hourFloor(Date.now()/1000);state.selectedTime=clamp(state.anchor,...Object.values(timeBounds()));
-  state.place={name:place.name,latitude:clampLatitude(place.latitude),longitude:wrappedLongitude(place.longitude)};
-  if(center){state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;}
-  dom.citySearch.value=state.place.name;save();refreshView();requestMap();loadModelsForView();void loadPointSeries();
-}
-function selectModel(model){
-  if(!Object.hasOwn(MODELS,model))return;
-  state.model=model;state.forecast=state.forecasts[model]||null;
-  if(!pastModelAvailable())leavePast();
-  dom.modelSelect.value=model;stopPlay();save();refreshView();loadModelsForView();
-  if(model==='icon_eu')void loadEuWms();
-}
-async function loadEuWms(){
-  if(state.euWms&&Date.now()/1000-state.euWms.retrievedAt<570)return state.euWms;
-  if(euMetadataLoading)return euMetadataLoading;
-  euMetadataLoading=(async()=>{
-    try{
-      const meta=await fetchIconEuCapabilities();
-      state.euWms=meta;state.euWmsError=null;
-      if(state.model==='icon_eu')requestMap();
-      updateOverlayUI();
-      return meta;
-    }catch(error){
-      state.euWmsError=error.message;
-      if(state.model==='icon_eu'){
-        showMessage('DWD ICON-EU WMS unavailable: '+error.message,true);
-        updateOverlayUI();
-      }
-      return null;
-    }finally{euMetadataLoading=null;}
-  })();
-  return euMetadataLoading;
-}
-function plotsHeading(){
-  return state.view==='compare'?'ICON model comparison · shared time':
-    state.mode==='radar'||state.mode==='continuous'?'Past ICON estimates + forecasts':'Forecast graphs · future model data';
-}
-function setView(view){
-  if(!['forecast','compare'].includes(view))return;
-  state.view=view;stopPlay();
-  if(view==='compare')leavePast();
-  if(view==='compare'&&state.mode!=='forecast')state.mode='forecast';
-  dom.appRoot.classList.toggle('compare-mode',view==='compare');
-  dom.viewForecast.classList.toggle('active',view==='forecast');dom.viewCompare.classList.toggle('active',view==='compare');
-  dom.viewForecast.setAttribute('aria-pressed',String(view==='forecast'));
-  dom.viewCompare.setAttribute('aria-pressed',String(view==='compare'));
-  dom.plotsHeading.textContent=plotsHeading();
-  closeDrawer();refreshView();loadModelsForView();
-}
-function setHorizon(hours){
-  if(![48,120].includes(hours))return;
-  if(state.pastModel){state.pastModel=false;state.selectedTime=state.anchor;}
-  state.horizon=hours;state.selectedTime=clamp(state.selectedTime,...Object.values(timeBounds()));
-  save();refreshView();
-}
-function setSelectedTime(time){
-  const {min,max}=timeBounds();
-  const step=timelineStep();const next=clamp(Math.round(time/step)*step,min,max);
-  if(next===state.selectedTime)return;
-  state.selectedTime=next;state.forecastIndex=state.forecast?nearestIndex(state.forecast.hourly.time,next):0;
-  updateReadouts();updateTimeUI();requestCursor();requestMap();
-}
-function getRadarTime(){return state.radar?.frames?.[state.radarIndex]?.time??null;}
-function radarWindowStart(){
-  return radarHistoryStartIndex(state.radar?.frames,state.radarHours);
-}
-function timeList(){
-  return (state.radar?.frames||[]).slice(radarWindowStart()).map(f=>f.time);
-}
-function setRadarIndex(index){
-  if(!state.radar?.frames?.length)return;
-  const next=clamp(Math.round(index),radarWindowStart(),state.radar.frames.length-1);
-  if(next===state.radarIndex)return;
-  state.radarIndex=next;updateReadouts();updateTimeUI();requestCursor();requestGraphs();updateOverlayUI();requestMap();
-}
-function setRadarHours(hours){
-  if(!RADAR_WINDOWS.includes(hours))return;
-  stopPlay();
-  state.radarHours=hours;
-  if(state.radar?.frames?.length)state.radarIndex=Math.max(state.radarIndex,radarWindowStart());
-  updateTimeUI();updateReadouts();requestCursor();requestGraphs();updateOverlayUI();requestMap();save();
-}
-function setMode(mode){
-  if(!['forecast','radar','continuous'].includes(mode))return;
-  if(mode==='radar'&&state.radarUnavailable)return;
-  stopPlay();state.mode=mode;
-  if(mode!=='forecast')leavePast();
-  if(mode==='continuous'){
-    const entries=combinedFrames();state.continuousCursor=entries.findLast(f=>f.kind==='radar')||entries[0]||null;
-  }
-  dom.modeContinuous.classList.toggle('active',mode==='continuous');
-  dom.modeContinuous.setAttribute('aria-pressed',String(mode==='continuous'));
-  dom.modeForecast.classList.toggle('active',mode==='forecast');dom.modeRadar.classList.toggle('active',mode==='radar');
-  dom.modeForecast.setAttribute('aria-pressed',String(mode==='forecast'));
-  dom.modeRadar.setAttribute('aria-pressed',String(mode==='radar'));
-  updateOverlayUI();
-  dom.mapInstruction.textContent=mode==='radar'?
-    'ACTUAL rainfall measurements, not predictions. Swipe for older scans · 2 fingers pan':
-    mode==='continuous'?'Observed radar, then radar nowcast, then ICON-D2 model. Swipe through time · 2 fingers pan':
-    'MODEL prediction, not radar. Swipe for later hours · 2 fingers pan';
-  dom.plotsHeading.textContent=plotsHeading();
-  renderGraphs();updateReadouts();updateTimeUI();requestCursor();requestGraphs();requestMap();buildLayerMenu();
-}
-/** Choose a map layer from the layer menu. ICON layers use the forecast
- * timeline; radar, nowcast and the rain sequence use their own timelines. */
-function selectMapLayer(id){
-  if(id==='timeline'){setMode('continuous');}
-  else if(id==='radar'){if(!state.radarUnavailable)setMode('radar');}
-  else if(id==='nowcast'){
-    if(!state.nowcast)return;
-    setMode('continuous');
-    const frames=combinedFrames(),i=frames.findIndex(f=>f.kind==='nowcast');
-    if(i>=0)setContinuousIndex(i);
-  }else if(ICON_LAYERS.includes(id)){
-    state.iconLayer=id;
-    if(state.mode!=='forecast')setMode('forecast');
-    // Hourly layers have no 15-minute frames: snap to the layer's own step.
-    const {min,max}=timeBounds(),step=timelineStep();
-    state.selectedTime=clamp(Math.round(state.selectedTime/step)*step,min,max);
-    save();updateReadouts();updateTimeUI();requestCursor();requestMap();
-  }
-  buildLayerMenu();updateCacheControls();
-}
-function selectedMenuLayer(){
-  if(state.mode==='radar')return 'radar';
-  if(state.mode==='continuous')return combinedFrame()?.kind==='nowcast'?'nowcast':'timeline';
-  return state.iconLayer;
-}
-function buildLayerMenu(){
-  const current=selectedMenuLayer();
-  const entries=[
-    {group:'Observed radar & nowcast',items:[
-      {id:'timeline',label:'Rain sequence: radar → nowcast → ICON-D2',note:'observed, then radar-based forecast, then model'},
-      ...(state.radarUnavailable?[]:[{id:'radar',label:'Radar · observed',note:'DWD RADOLAN RY, past 2 days'}]),
-      ...(state.nowcast?[{id:'nowcast',label:'Radar nowcast · next 2 h',note:'DWD RADVOR, extrapolated, not observed'}]:[]),
-    ]},
-  ];
-  const groups=new Map();
-  for(const id of ICON_LAYERS){
-    if(state.icon&&!state.icon.layers[id])continue;
-    const info=LAYER_INFO[id];
-    if(!groups.has(info.group))groups.set(info.group,[]);
-    groups.get(info.group).push({id,label:info.label,note:info.unit});
-  }
-  for(const [group,items] of groups)entries.push({group:'ICON-D2 model forecast · '+group,items});
-  dom.layerList.replaceChildren();
-  for(const section of entries){
-    const fs=document.createElement('fieldset');fs.className='layer-group';
-    const lg=document.createElement('legend');lg.textContent=section.group;fs.append(lg);
-    for(const item of section.items){
-      const label=document.createElement('label');label.className='layer-option';
-      const input=document.createElement('input');input.type='radio';input.name='mapLayer';input.value=item.id;
-      input.checked=item.id===current;
-      input.addEventListener('change',()=>{selectMapLayer(item.id);});
-      const text=document.createElement('span');text.textContent=item.label;
-      const note=document.createElement('small');note.textContent=item.note;
-      label.append(input,text,note);fs.append(label);
-    }
-    dom.layerList.append(fs);
-  }
-  dom.warningsToggleRow.hidden=!state.warnings;
-  dom.toggleWarnings.checked=state.showWarnings;
-  dom.modeRadar.hidden=state.radarUnavailable;
-  dom.layersBtnLabel.textContent=current==='timeline'?'Rain sequence':current==='radar'?'Radar (observed)':
-    current==='nowcast'?'Radar nowcast':LAYER_INFO[current]?.label||current;
-}
-function toggleLayerPanel(open=dom.layerPanel.hidden){
-  dom.layerPanel.hidden=!open;dom.layersBtn.setAttribute('aria-expanded',String(open));
-  if(open)buildLayerMenu();
-}
-/** What the map currently shows. */
-function currentDisplay(){
-  const cf=state.mode==='continuous'?combinedFrame():null;
-  const out={forecastKind:null,iconFrame:null,layer:null,time:null,radarFrame:null,radarKind:null};
-  if(state.mode==='forecast'||cf?.kind==='forecast'){
-    out.time=cf?cf.time:state.selectedTime;out.layer=cf?'precip':state.iconLayer;
-    if(state.model==='icon_eu'&&out.layer==='precip')out.forecastKind='eu';
-    else{out.forecastKind='icon';out.iconFrame=state.icon?iconFrameAt(out.layer,out.time):null;}
-  }
-  if(cf?.kind==='nowcast'){out.radarKind='nowcast';out.radarFrame=nowcastFrame(state.nowcast,cf.time);}
-  else if(state.radar?.frames?.length&&(state.mode==='radar'||cf?.kind==='radar'||state.mode==='forecast'&&state.showRain)){
-    const f=state.radar.frames[state.radarIndex];
-    out.radarKind='radar';out.radarFrame=radarFrame(state.radar,f);
-  }
-  return out;
-}
-function updateOverlayUI(){
-  const d=currentDisplay();
-  const visibleRain=Boolean(d.radarKind);
-  dom.toggleRain.setAttribute('aria-pressed',String(state.mode==='forecast'&&state.showRain));
-  dom.toggleClouds.setAttribute('aria-pressed',String(state.showClouds));
-  dom.toggleRain.hidden=state.mode!=='forecast'||state.radarUnavailable||!state.radar;
-  dom.toggleRain.textContent='📡 Latest observed radar (not forecast)';
-  dom.toggleClouds.textContent='☁ Latest satellite (observed)';
-  dom.radarCanvas.hidden=!visibleRain;
-  if(!visibleRain){crossfades.radar.stop();dom.radarTransitionCanvas.hidden=true;painters.radar.reset();}
-  dom.cloudTiles.hidden=!state.showClouds;
-  const observations=[];
-  if(state.mode==='forecast'&&state.showRain&&visibleRain)observations.push('rain radar');
-  if(state.showClouds)observations.push('satellite clouds');
-  const info=d.layer?LAYER_INFO[d.layer]:null;
-  const icon=d.iconFrame;
-  // Radar-canvas labels describe the frame actually on screen, which may
-  // still be the previous scan/nowcast while the requested one loads.
-  const shownRadar=d.radarKind?painters.radar.shown:null;
-  const radarKind=shownRadar?.source||d.radarKind;
-  const radarLoading=d.radarFrame&&(!shownRadar||shownRadar.key!==d.radarFrame.key||!painters.radar.complete);
-  const loadingNote=!radarLoading?'':d.radarKind==='nowcast'?` · loading nowcast ${formatTime(d.radarFrame.time)}`:` · loading ${formatTime(d.radarFrame.time)}`;
-  const iconLoading=icon&&(painters.forecast.shown?.key!==icon.key||!painters.forecast.complete);
-  dom.mapLayerName.textContent=
-    radarKind==='nowcast'?'RADAR NOWCAST · extrapolated, not observed':
-    radarKind==='radar'&&state.mode!=='forecast'?'OBSERVED RADAR · real past · 1 km':
-    d.forecastKind==='eu'?(state.euWms?'FORECAST · ICON-EU hourly rain · ~7 km':'FORECAST · ICON-EU map loading'):
-    d.forecastKind==='icon'?(!state.icon?'FORECAST map unavailable':
-      pastActive()?`PAST · ICON-D2 ${info.label.toLowerCase()} · earlier model run, not observed`:`FORECAST · ICON-D2 ${info.label.toLowerCase()} · model`):
-    'FORECAST map unavailable';
-  dom.radarAttribution.textContent=(visibleRain?' · Radar © DWD':'')+(d.forecastKind==='icon'&&state.icon?' · ICON-D2 © DWD':'')+
-    (state.showClouds?' · Satellite © DWD':'')+(state.showWarnings&&state.warnings?' · Warnings © DWD':'');
-  const obsNote=observations.length?' · Observations do not follow ICON time':'';
-  dom.mapModelName.textContent=
-    d.radarKind&&state.mode!=='forecast'&&!shownRadar?(d.radarKind==='nowcast'?'Loading radar nowcast…':'Loading observed rainfall scans…'):
-    radarKind==='nowcast'?`Nowcast for ${formatTime(shownRadar.time)} · issued ${formatTime(state.nowcast?.issued)} · DWD RADVOR${loadingNote}`:
-    radarKind==='radar'&&state.mode!=='forecast'?
-      `Observed ${formatTime(shownRadar.time)}${radarIsStale()?' · STALE RADAR':''}${loadingNote}`:
-    d.forecastKind==='icon'?(icon?`${pastActive()?'Modelled':'Predicted'} ${formatTime(icon.time)} · DWD ICON-D2 run ${formatUTC(icon.runTime)}${iconLoading?' · loading':''}`+
-        (state.model!=='icon_d2'?` · charts: ${MODELS[state.model].label}`:'')+obsNote:
-      state.icon?(pastActive()&&state.history?.forRun!==state.icon.runTime?'Loading past ICON-D2 runs…':
-        `No ICON-D2 ${info.label.toLowerCase()} for ${formatTime(d.time)}`)+obsNote:
-      state.iconError?'ICON-D2 tiles not available':'Loading ICON-D2 tiles…'):
-    d.forecastKind==='eu'?(state.euWms?`Predicted ${formatTime(d.time)} · ICON-EU${obsNote}`:
-      state.euWmsError?'DWD EU map unavailable':'Loading DWD EU map…'):
-    `DWD ${MODELS[state.model].label}`;
-  updateLegend(d);
-}
-function updateLegend(d){
-  const shownRadar=d.radarKind?painters.radar.shown?.source:null;
-  const layer=d.radarKind&&(state.mode!=='forecast')?shownRadar||d.radarKind:d.forecastKind==='icon'?d.layer:null;
-  const legend=layer?legendFor(layer):null;
-  dom.mapLegend.hidden=!legend;
-  if(!legend)return;
-  const key=layer+'|'+legend.unit;
-  if(dom.mapLegend.dataset.layer===key)return;
-  dom.mapLegend.dataset.layer=key;
-  const title=document.createElement('div');title.className='legend-title';
-  title.textContent=(layer==='radar'?'Observed rain rate':layer==='nowcast'?'Nowcast rain rate':legend.label)+' · '+legend.unit;
-  const bar=document.createElement('div');bar.className='legend-bar';
-  for(const item of legend.items){
-    const cell=document.createElement('span');cell.style.background=item.css;cell.textContent=item.label;bar.append(cell);
-  }
-  const children=[title,bar];
-  if(layer==='wind_direction'){
-    const note=document.createElement('div');note.className='legend-note';
-    note.textContent='Arrows point where the wind blows to; colour shows where it comes from.';children.push(note);
-  }
-  dom.mapLegend.replaceChildren(...children);
-}
-function toggleObservation(which){
-  if(which==='rain'){
-    state.showRain=!state.showRain;
-    if(state.showRain&&state.radar)state.radarIndex=state.radar.frames.length-1;
-  }else if(which==='clouds'){state.showClouds=!state.showClouds;cloudWarningIssued=false;}
-  else return;
-  updateOverlayUI();save();requestMap();
-}
-
-function applyGridForecast(){
-  const series=state.gridSeries;
-  if(!series)return false;
-  const current=state.forecasts.icon_d2;
-  // The source is ONLY a genuine Open-Meteo ICON point forecast.
-  // Never interpolate from a previous grid-only fallback as if it were wind.
-  const point=current?.fromRawGrid?current.rawPointForecast:(current||null);
-  const combined=composeIconD2Forecast(series,point);
-  state.forecasts.icon_d2=combined;
-  state.modelErrors.icon_d2=combined.gridOnly?
-    'Point-API extras awaiting Open-Meteo':undefined;
-  if(state.model==='icon_d2'){
-    state.forecast=combined;
-    showMessage(combined.gridOnly?
-      'DWD ICON-D2 charts ready from the map grid; loading Open-Meteo point data…':'');
-  }
-  return true;
-}
-/** ICON-D2 chart series from the tile service (same grid as the map), if the
- * run manifest publishes `series`. Otherwise the Open-Meteo point API alone. */
-async function loadPointSeries(){
-  const manifest=state.icon,place={...state.place},epoch=++pointSeriesEpoch;
-  if(!manifest?.series){state.gridSeries=null;return;}
+/* ---------- point forecast (charts + readout) ---------- */
+let pointEpoch=0,pointController=null;
+const pointCacheKey=p=>`openwetter.point.v3.${placeKey(p)}`;
+async function loadPoint(){
+  const place={...state.place},epoch=++pointEpoch;
+  pointController?.abort();const controller=new AbortController();pointController=controller;
+  state.pointLoading=true;state.pointError=null;
+  const cached=(()=>{try{const c=JSON.parse(localStorage.getItem(pointCacheKey(place))||'null');
+    return c&&Date.now()-c.savedAt<12*3600_000?c:null;}catch{return null;}})();
+  if(cached&&!state.point){try{state.point=attachPreviousRun(parsePointForecast(cached.main),cached.previous);}catch{/* ignore */}}
+  requestGraphs();
   try{
-    const series=await downloadGridSeries(manifest,place.latitude,place.longitude);
-    if(epoch!==pointSeriesEpoch)return;
-    state.gridSeries=series;
-    if(series)applyGridForecast();
-    refreshView();
+    const get=async url=>{const r=await fetch(url,{signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);
+      const j=await r.json();if(j?.error)throw new Error(j.reason||'forecast service error');return j;};
+    const [main,previous]=await Promise.all([get(pointForecastURL(place)),get(previousRunURL(place)).catch(()=>null)]);
+    if(epoch!==pointEpoch)return;
+    state.point=attachPreviousRun(parsePointForecast(main),previous);
+    try{localStorage.setItem(pointCacheKey(place),JSON.stringify({savedAt:Date.now(),main,previous}));}catch{/* optional */}
   }catch(error){
-    if(epoch!==pointSeriesEpoch)return;
-    state.gridSeries=null;
-    if(state.model==='icon_d2'&&!state.forecasts.icon_d2)showMessage('ICON-D2 grid series: '+error.message,true);
+    if(epoch!==pointEpoch||controller.signal.aborted)return;
+    state.pointError=error.message;
+    if(!state.point)toast('Forecast unavailable: '+error.message,{error:true});
+  }finally{
+    if(epoch===pointEpoch){state.pointLoading=false;renderMeteo();updateReadout();}
   }
 }
-
-/* ---------- map layers ---------- */
-// Keep the currently painted pixels until the replacement frame has arrived.
-function prepareRasterCanvas(layer,width,height,ratio){
-  const pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
-  const resized=layer.width!==pixelWidth||layer.height!==pixelHeight;
-  if(resized){layer.width=pixelWidth;layer.height=pixelHeight;}
-  const ctx=layer.getContext('2d');
-  ctx.setTransform(ratio,0,0,ratio,0,0);
-  return {ctx,resized};
+/** Forecast object the charts use: the stitched series, or one model only. */
+function chartForecast(){
+  const f=state.point;if(!f||state.source==='seamless')return f;
+  const m=f.models[state.source];if(!m)return null;
+  return {...f,series:{...m,previous_temperature_2m:f.series.previous_temperature_2m},transitions:[],source:f.time.map(()=>state.source)};
 }
-/** One map layer canvas fed by the GPU renderer. While a new frame's tiles
- * download, the previous complete frame stays visible; at a new map view the
- * previous time is redrawn at once if its tiles cover it. */
+
+/* ---------- meteogram ---------- */
+let graphRequest=0;
+function requestGraphs(){if(!graphRequest)graphRequest=requestAnimationFrame(()=>{graphRequest=0;drawGraphs();});}
+function renderMeteo(){
+  dom.graphs.replaceChildren(...state.graphs.map((cfg,i)=>{
+    const div=document.createElement('div');div.className='graph';div.dataset.index=String(i);
+    const c=document.createElement('canvas');c.setAttribute('aria-label',GRAPH_TYPES[cfg.type].label+' graph');div.append(c);return div;}));
+  renderExtremes();updateDays();drawGraphs();updateCursor();
+}
+function placeWarningIntervals(){
+  if(!state.warnings)return [];
+  const id=placeKey(state.place)+'|'+state.warnings.generatedAt;
+  if(placeWarnings?.id!==id)placeWarnings={id,list:warningsCovering(state.warnings,state.place.latitude,state.place.longitude)};
+  const v=timeView();
+  return placeWarnings.list.map(w=>({start:Number.isFinite(w.onset)?w.onset:v.start,end:Number.isFinite(w.expires)?w.expires:v.end,color:w.color}));
+}
+function graphInfo(){
+  return {temp:conv.temp,wind:conv.wind,warnings:placeWarningIntervals(),
+    message:state.pointError?'Forecast unavailable: '+state.pointError:'Loading forecast…'};
+}
+function drawGraphs(){
+  const f=chartForecast(),view=timeView(),d=days(),info=graphInfo();
+  dom.graphs.querySelectorAll('.graph').forEach((node,i)=>{const cfg=state.graphs[i];if(cfg)drawGraph(node.firstChild,cfg,f,view,d,info);});
+  renderExtremes();updateCursor();
+}
+function renderExtremes(){
+  const ex=dailyExtremes(chartForecast(),days());
+  dom.extremes.replaceChildren(...ex.flatMap(e=>[['max',e.max],['min',e.min]].map(([k,v])=>{
+    const s=document.createElement('span');s.className=k;s.textContent=v==null?'':String(Math.round(conv.temp(v)));return s;})));
+}
+function updateDays(){
+  const d=days(),active=d.findIndex(x=>state.time>=x.start&&state.time<x.end);
+  if(dom.days.children.length!==d.length||dom.days.dataset.start!==String(d[0].start)){
+    dom.days.dataset.start=String(d[0].start);
+    dom.days.replaceChildren(...d.map((x,i)=>{const b=document.createElement('button');b.textContent=fmt(x.start+43200,{weekday:'short'});
+      b.dataset.index=String(i);return b;}));
+  }
+  [...dom.days.children].forEach((b,i)=>{b.classList.toggle('active',i===active);b.setAttribute('aria-pressed',String(i===active));});
+}
+function updateCursor(){
+  const v=timeView(),r=dom.graphs.getBoundingClientRect(),m=dom.meteo.getBoundingClientRect();
+  const top=r.top-m.top,height=r.height,x=t=>(t-v.start)/(v.end-v.start)*r.width;
+  for(const [line,t] of [[dom.cursorLine,state.time],[dom.nowLine,Date.now()/1000]]){
+    line.style.top=top+'px';line.style.height=height+'px';line.style.left=Math.round(x(t)-0.5)+'px';
+    line.hidden=t<v.start||t>v.end;
+  }
+}
+function updateReadout(){
+  const f=chartForecast(),t=state.time;
+  dom.readTime.textContent=hhmm(t);
+  const temp=seriesValueAt(f,'temperature_2m',t),rain=seriesValueAt(f,'precipitation',t),
+    wind=seriesValueAt(f,'wind_speed_10m',t),dir=seriesValueAt(f,'wind_direction_10m',t,{angle:true});
+  dom.readTemp.textContent=temp==null?'—':String(Math.round(conv.temp(temp)));
+  dom.readRain.textContent=rainText(rain);
+  dom.readWind.textContent=wind==null?'—':String(Math.round(conv.wind(wind)));
+  dom.unitTemp.textContent=state.units.temperature;dom.unitRain.textContent=state.units.precipitation;
+  dom.unitWind.textContent=state.units.wind==='bft'?'Bft':state.units.wind;
+  // Arrow points where the wind blows to.
+  dom.windDirIcon.style.transform=dir==null?'':`rotate(${dir+90}deg)`;
+}
+
+/* ---------- map ---------- */
+const renderer=createRasterRenderer({forceCanvas:params.has('canvas2d'),
+  onContextRestored:()=>{for(const p of Object.values(painters))p.reset();requestMap();}});
+const crossfades={
+  field:createWeatherCrossfade(dom.iconCanvas,dom.iconTransitionCanvas,{durationMs:260,opacity:()=>state.opacity.field,enabled:()=>state.smoothFrames}),
+  rain:createWeatherCrossfade(dom.radarCanvas,dom.radarTransitionCanvas,{durationMs:260,opacity:()=>state.opacity.rain,enabled:()=>state.smoothFrames}),
+};
+function prepareCanvas(layer,width,height,ratio){
+  const w=Math.max(1,Math.round(width*ratio)),h=Math.max(1,Math.round(height*ratio)),resized=layer.width!==w||layer.height!==h;
+  if(resized){layer.width=w;layer.height=h;}
+  const ctx=layer.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);return {ctx,resized};
+}
+/** One layer canvas fed by the GPU renderer; keeps the previous complete frame
+ * on screen while the next one downloads. */
 function createPainter(canvas,crossfade){
   let shown=null,shownScene='',complete=false,wantedKey='',loadTimer=0;
   function drawFrame(ctx,frame,view,scene,resized,extra){
     const finish=crossfade.beforeDraw(frame.key,scene,{resized});
-    ctx.clearRect(0,0,view.width,view.height);
-    renderer.draw(ctx,frame,view);
-    extra?.(ctx,frame,view);
-    finish();
+    ctx.clearRect(0,0,view.width,view.height);renderer.draw(ctx,frame,view);extra?.(ctx,frame,view);finish();
     shown=frame;shownScene=scene;complete=renderer.ready(frame,view);
   }
   return {
-    get shown(){return shown;},
-    get complete(){return complete;},
+    get shown(){return shown;},get complete(){return complete;},
     reset(){shown=null;shownScene='';complete=false;wantedKey='';clearTimeout(loadTimer);},
     paint(frame,view,{scene,extra,onShown,onError}={}){
-      const {ctx,resized}=prepareRasterCanvas(canvas,view.width,view.height,view.ratio);
+      const {ctx,resized}=prepareCanvas(canvas,view.width,view.height,view.ratio);
       if(resized)crossfade.stop();
-      if(!frame){
-        crossfade.stop();ctx.clearRect(0,0,view.width,view.height);
-        shown=null;shownScene='';complete=false;wantedKey='';return 'empty';
-      }
+      if(!frame){crossfade.stop();ctx.clearRect(0,0,view.width,view.height);shown=null;shownScene='';complete=false;wantedKey='';return;}
       const sceneChanged=resized||scene!==shownScene;
-      if(!sceneChanged&&complete&&shown?.key===frame.key)return 'same';
-      if(renderer.ready(frame,view)){
-        drawFrame(ctx,frame,view,scene,resized,extra);onShown?.(frame);return 'drawn';
-      }
+      if(!sceneChanged&&complete&&shown?.key===frame.key)return;
+      if(renderer.ready(frame,view)){drawFrame(ctx,frame,view,scene,resized,extra);onShown?.(frame);return;}
       if(sceneChanged){
-        // At a new map view keep showing the previous time of the SAME layer
-        // and source while the new tiles load; never another layer's pixels.
-        const sameSource=shown&&shown.layer===frame.layer&&shown.source===frame.source;
-        if(sameSource&&shown.key!==frame.key&&renderer.ready(shown,view)){
-          const previous=shown;drawFrame(ctx,previous,view,scene,resized,extra);complete=false;shown=previous;
-        }else{drawFrame(ctx,frame,view,scene,resized,extra);complete=false;}
+        const same=shown&&shown.layer===frame.layer&&shown.source===frame.source;
+        if(same&&shown.key!==frame.key&&renderer.ready(shown,view)){const prev=shown;drawFrame(ctx,prev,view,scene,resized,extra);complete=false;shown=prev;}
+        else{drawFrame(ctx,frame,view,scene,resized,extra);complete=false;}
       }
       if(wantedKey!==frame.key){
         wantedKey=frame.key;clearTimeout(loadTimer);
-        // During a fast scrub only the chunk under the finger is fetched.
-        loadTimer=setTimeout(()=>{
-          renderer.load(frame,view).then(result=>{
-            if(result.failed)onError?.(result);
-            if(wantedKey===frame.key){wantedKey='';requestMap();}
-          }).catch(error=>{onError?.({error});});
-        },state.playing?0:70);
+        loadTimer=setTimeout(()=>{renderer.load(frame,view).then(result=>{if(result.failed)onError?.(result);
+          if(wantedKey===frame.key){wantedKey='';requestMap();}}).catch(error=>onError?.({error}));},gesture?40:70);
       }
-      return 'loading';
     },
   };
 }
-const painters={forecast:createPainter(dom.iconCanvas,crossfades.forecast),radar:createPainter(dom.radarCanvas,crossfades.radar)};
+const painters={field:createPainter(dom.iconCanvas,crossfades.field),rain:createPainter(dom.radarCanvas,crossfades.rain)};
+let mapRequest=0;
+function requestMap(){if(!mapRequest)mapRequest=requestAnimationFrame(()=>{mapRequest=0;renderMap();});}
+function mapView(){
+  const r=dom.map.getBoundingClientRect();
+  return {width:r.width,height:r.height,ratio:Math.min(2.5,window.devicePixelRatio||1),zoom:state.map.zoom,
+    latitude:state.map.latitude,longitude:state.map.longitude};
+}
+const viewKey=(v,extra)=>[v.width,v.height,v.ratio,v.zoom.toFixed(4),v.latitude.toFixed(5),v.longitude.toFixed(5),extra].join('|');
+function renderBaseTiles(view){
+  const tz=clamp(Math.round(view.zoom),2,18),scale=2**(view.zoom-tz),size=256*scale;
+  const c=mercator(view.latitude,view.longitude,tz),left=c.x*scale-view.width/2,top=c.y*scale-view.height/2,n=2**tz;
+  const want=new Map();
+  for(let x=Math.floor(left/size);x<=Math.floor((left+view.width)/size);x++)
+    for(let y=Math.max(0,Math.floor(top/size));y<=Math.min(n-1,Math.floor((top+view.height)/size));y++){
+      const xx=((x%n)+n)%n;want.set(`${tz}/${x}/${y}`,{url:`https://tile.openstreetmap.org/${tz}/${xx}/${y}.png`,left:x*size-left,top:y*size-top});
+    }
+  const existing=new Map([...dom.baseTiles.children].map(n=>[n.dataset.key,n]));
+  for(const [key,t] of want){
+    let img=existing.get(key);
+    if(!img){img=document.createElement('img');img.dataset.key=key;img.alt='';img.decoding='async';img.draggable=false;img.src=t.url;dom.baseTiles.append(img);}
+    img.style.width=img.style.height=size+'px';img.style.transform=`translate(${t.left}px,${t.top}px)`;img.style.left=img.style.top='0';
+  }
+  for(const [key,node] of existing)if(!want.has(key))node.remove();
+}
+let shownRain=null,shownField=null;
+function renderMap(){
+  const view=mapView();if(view.width<5||view.height<5)return;
+  renderBaseTiles(view);
+  const fieldFrame=state.field&&state.icon?iconFrameAt(state.field,state.time):null;
+  painters.field.paint(fieldFrame,view,{scene:viewKey(view,'field:'+state.field),
+    extra:state.field==='wind_direction'?(ctx,frame,v)=>drawWindArrows(ctx,renderer,frame,v):null,
+    onShown:frame=>{shownField=frame;updateChip();sampleChip();schedulePrefetch(frame,view);},
+    onError:refreshAfterMissingTiles});
+  if(!fieldFrame){shownField=null;}
+  dom.iconCanvas.style.opacity=String(state.opacity.field);
+  const rain=state.rain?rainFrameAt(state.time):null;
+  painters.rain.paint(rain?.frame||null,view,{scene:viewKey(view,'rain'),
+    onShown:frame=>{shownRain=frame;updateChip();sampleChip();schedulePrefetch(frame,view);},
+    onError:refreshAfterMissingTiles});
+  if(!rain?.frame)shownRain=null;
+  dom.radarCanvas.style.opacity=String(state.opacity.rain);
+  drawWarningsLayer(view);
+  updateChip();updateLegend();
+}
 let prefetchTimer=0;
-/** Lazily warm the neighbouring chunk when the cursor nears a chunk edge. */
 function schedulePrefetch(frame,view){
   clearTimeout(prefetchTimer);
   prefetchTimer=setTimeout(()=>{
     let next=null;
     if(frame.source==='icon'){
       const manifest=iconManifests().find(m=>m.run===frame.run&&m.tile===frame.tile);
-      if(manifest?.history){
-        // A 3-hour history slice: warm the neighbouring runs' slices (or the newest run) on both sides.
-        const step=manifest.layers[frame.layer].step;
-        for(const dir of [-1,1])for(let k=1;k<=4;k++){
-          const t=frame.time+dir*k*step,m=chooseRun(iconManifests(),frame.layer,t),f=m&&iconFrame(m,frame.layer,t);
-          if(f&&f.chunkKey!==frame.chunkKey){renderer.prefetch(f,view);break;}
-        }
-      }
-      else if(frame.index>=frame.frames-6)next=iconAdjacentChunk(manifest,frame,1);
-      else if(frame.index<=3)next=iconAdjacentChunk(manifest,frame,-1);
+      if(manifest&&!manifest.history){if(frame.index>=frame.frames-6)next=iconAdjacentChunk(manifest,frame,1);else if(frame.index<=3)next=iconAdjacentChunk(manifest,frame,-1);}
     }else if(frame.source==='radar'&&state.radar){
       const i=state.radar.frames.findIndex(f=>f.time===frame.time);
-      for(const j of [i-6,i+6]){
-        const f=state.radar.frames[j];
-        if(f&&f.chunkKey!==frame.chunkKey){next=radarFrame(state.radar,f);break;}
-      }
+      for(const j of [i-6,i+6]){const f=state.radar.frames[j];if(f&&f.chunkKey!==frame.chunkKey){next=radarFrame(state.radar,f);break;}}
     }
     if(next)renderer.prefetch(next,view);
   },400);
 }
-function paintLayers(view){
-  const d=currentDisplay(),generation=++forecastPaintEpoch,map={...state.map};
-  const canvasSource=state.mode+'/'+(d.forecastKind||'none');
-  if(forecastCanvasSource!==canvasSource){
-    crossfades.forecast.stop();painters.forecast.reset();
-    prepareRasterCanvas(dom.iconCanvas,view.width,view.height,view.ratio).ctx.clearRect(0,0,view.width,view.height);
-    forecastCanvasSource=canvasSource;
-  }
-  const scene=mapViewKey('forecast',view.width,view.height,view.ratio,map,[d.forecastKind,d.layer].join(':'));
-  if(d.forecastKind==='icon'){
-    painters.forecast.paint(d.iconFrame,view,{scene,
-      extra:d.layer==='wind_direction'?(ctx,frame,v)=>drawWindArrows(ctx,renderer,frame,v):null,
-      onShown:frame=>{
-        updateOverlayUI();schedulePrefetch(frame,view);
-        if(state.mode==='continuous'&&combinedFrame()?.kind==='forecast')completeBoundaryTransition('forecast');
-        maybeSelfCheck(frame,view);
-      },
-      onError:result=>{refreshAfterMissingTiles(result);if(generation===forecastPaintEpoch)showMessage('Some ICON-D2 tiles are unavailable (partial map).',true);}});
-  }else if(d.forecastKind==='eu'&&state.euWms){
-    painters.forecast.reset();
-    const {ctx,resized}=prepareRasterCanvas(dom.iconCanvas,view.width,view.height,view.ratio);
-    if(resized)crossfades.forecast.stop();
-    if(iconEuValidTime(state.euWms,d.time)===null){
-      crossfades.forecast.stop();ctx.clearRect(0,0,view.width,view.height);
-    }else void paintIconEuWms(ctx,state.euWms,d.time,view.width,view.height,map.zoom,map,
-       ()=>generation===forecastPaintEpoch,
-       ()=>crossfades.forecast.beforeDraw(`icon-eu:${state.euWms.run}:${d.time}`,scene,{resized}))
-       .then(painted=>{if(painted&&generation===forecastPaintEpoch&&state.mode==='continuous'&&combinedFrame()?.kind==='forecast')completeBoundaryTransition('forecast');})
-       .catch(error=>{if(generation===forecastPaintEpoch)showMessage('ICON-EU WMS tiles: '+error.message,true);});
-  }else{
-    painters.forecast.paint(null,view);
-  }
-  const radarScene=mapViewKey('radar',view.width,view.height,view.ratio,map,state.mode);
-  painters.radar.paint(d.radarFrame,view,{scene:radarScene,
-    onShown:frame=>{
-      state.displayedRadarTime=frame.time;updateOverlayUI();
-      if(frame.source==='radar')schedulePrefetch(frame,view);
-      if(state.mode==='continuous'&&canvasGroup(combinedFrame()?.kind)==='radar')completeBoundaryTransition('radar');
-    },
-    onError:result=>{refreshAfterMissingTiles(result);if(d.radarFrame)showMessage((d.radarKind==='nowcast'?'Nowcast':'Radar')+' tiles partly unavailable.',true);}});
-  if(d.radarFrame&&painters.radar.shown?.key!==d.radarFrame.key)updateOverlayUI();
-}
-let selfCheckDone=false;
-/** ?debug=codes: prove decoded codes survive the GPU path exactly. */
-function maybeSelfCheck(frame,view){
-  if(selfCheckDone||!params.has('debug'))return;
-  selfCheckDone=true;
-  const tile=visibleFrameTiles(frame,view)[0];if(!tile)return;
-  void tileBlob(tile.url,'icon').then(blob=>renderer.selfCheck(blob,frame.frames,frame.index)).then(result=>{
-    console.info('OpenWetter code self-check',result);
-    showMessage(`Code self-check (${result.renderer}/${result.format}): ${result.ok?'exact':'MISMATCH'} · ${result.checked} pixels, ${result.mismatches} mismatches`,!result.ok);
-  }).catch(error=>showMessage('Code self-check failed: '+error.message,true));
-}
-/* ---------- warnings overlay ---------- */
-let projectedWarnings=null,warningsDrawKey='',placeWarnings=null,warningsListKey='';
-function warningTime(){return state.mode==='radar'?getRadarTime()??Date.now()/1000:chartTime();}
-/** Polygons are redrawn only when the view or the set of active warnings
- * changes, not on every time step of a scrub. */
-function drawWarnings(view){
-  const canvas=dom.warningsCanvas,show=state.showWarnings&&Boolean(state.warnings);
-  canvas.hidden=!show;
-  if(!show){warningsDrawKey='';return;}
-  const active=activeWarnings(state.warnings,warningTime());
-  const key=mapViewKey('warnings',view.width,view.height,view.ratio,state.map,state.warnings.generatedAt)+'|'+active.map(w=>w.id).join(',');
-  if(key===warningsDrawKey)return;
-  warningsDrawKey=key;
-  const {ctx}=prepareRasterCanvas(canvas,view.width,view.height,view.ratio);
-  ctx.clearRect(0,0,view.width,view.height);
+/* warnings polygons */
+let projected=null,warningsKey='',placeWarnings=null;
+function drawWarningsLayer(view){
+  const canvas=dom.warningsCanvas,show=state.warningsOn&&Boolean(state.warnings);canvas.hidden=!show;
+  if(!show){warningsKey='';return;}
+  const active=activeWarnings(state.warnings,state.time);
+  const key=viewKey(view,state.warnings.generatedAt)+'|'+active.map(w=>w.id).join(',');
+  if(key===warningsKey)return;warningsKey=key;
+  const {ctx}=prepareCanvas(canvas,view.width,view.height,view.ratio);ctx.clearRect(0,0,view.width,view.height);
   if(!active.length)return;
-  projectedWarnings??=new Map();
+  projected??=new Map();
   const world=256*2**view.zoom,c=mercator(view.latitude,view.longitude,view.zoom);
   ctx.save();ctx.lineJoin='round';
   for(const w of [...active].reverse()){
-    if(!projectedWarnings.has(w.id))projectedWarnings.set(w.id,w.areas.flatMap(a=>a.polygons.map(r=>
-      r.map(([lon,lat])=>{const p=mercator(lat,lon,0);return [p.x/256,p.y/256];}))));
-    const [r,g,b]=w.color;
-    ctx.beginPath();
-    for(const ring of projectedWarnings.get(w.id)){
-      ring.forEach(([x,y],i)=>{const sx=view.width/2+x*world-c.x,sy=view.height/2+y*world-c.y;i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
-      ctx.closePath();
-    }
-    ctx.fillStyle=`rgba(${r},${g},${b},.2)`;ctx.fill('evenodd');
-    ctx.strokeStyle=`rgba(${r},${g},${b},.9)`;ctx.lineWidth=1.4;ctx.stroke();
+    if(!projected.has(w.id))projected.set(w.id,w.areas.flatMap(a=>a.polygons.map(r=>r.map(([lon,lat])=>{const p=mercator(lat,lon,0);return [p.x/256,p.y/256];}))));
+    const [r,g,b]=w.color;ctx.beginPath();
+    for(const ring of projected.get(w.id)){ring.forEach(([x,y],i)=>{const sx=view.width/2+x*world-c.x,sy=view.height/2+y*world-c.y;i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});ctx.closePath();}
+    ctx.fillStyle=`rgba(${r},${g},${b},.22)`;ctx.fill('evenodd');ctx.strokeStyle=`rgba(${r},${g},${b},.9)`;ctx.lineWidth=1.4;ctx.stroke();
   }
   ctx.restore();
 }
-function renderWarningsList(){
-  const list=dom.warningsList;
-  if(!state.warnings){list.hidden=true;warningsListKey='';return;}
-  // Point-in-polygon once per place and warnings index; per time step only the
-  // validity window is checked.
-  const placeId=placeKey(state.place)+'|'+state.warnings.generatedAt;
-  if(placeWarnings?.id!==placeId)placeWarnings={id:placeId,
-    list:warningsCovering(state.warnings,state.place.latitude,state.place.longitude)};
-  const time=warningTime();
-  const here=activeWarnings({warnings:placeWarnings.list},time);
-  const key=placeId+'|'+here.map(w=>w.id).join(',');
-  if(key===warningsListKey)return;
-  warningsListKey=key;
-  list.hidden=!here.length;
-  if(!here.length){list.replaceChildren();return;}
-  const items=here.map(w=>{
-    const item=document.createElement('details');item.className='warning-item severity-'+w.severity.toLowerCase();
-    item.style.setProperty('--warning-color',`rgb(${w.color.join(',')})`);
-    const summary=document.createElement('summary');
-    const from=Number.isFinite(w.onset)?formatTime(w.onset):'now',until=Number.isFinite(w.expires)?formatTime(w.expires):'further notice';
-    summary.textContent=`⚠ ${w.headline.en||w.headline.de||w.event} · ${from} – ${until}`;
-    const body=document.createElement('p');body.textContent=[w.description.en||w.description.de,w.instruction.en||w.instruction.de].filter(Boolean).join(' ');
-    const src=document.createElement('small');src.textContent=`Official DWD warning · ${w.severity}`;
-    item.append(summary,body,src);return item;
-  });
-  list.replaceChildren(...items);
-}
-function stopPlay(){if(playTimer)clearInterval(playTimer);playTimer=null;state.playing=false;dom.playBtn.textContent='▶';dom.playBtn.setAttribute('aria-label','Play weather timeline');}
-function play(){
-  if(state.playing){stopPlay();return;}
-  if(state.mode==='radar'&&!timeList().length)return;
-  if(state.mode==='continuous'&&!combinedFrames().length)return;
-  state.playing=true;dom.playBtn.textContent='Ⅱ';dom.playBtn.setAttribute('aria-label','Pause weather timeline');
-  playTimer=setInterval(()=>{
-    if(state.mode==='radar'){
-      if(state.radarIndex>=state.radar.frames.length-1){stopPlay();return;}
-      setRadarIndex(state.radarIndex+1);
-    }else if(state.mode==='continuous'){
-      const frames=combinedFrames(),i=continuousCursorIndex(frames,state.continuousCursor);
-      if(i>=frames.length-1){stopPlay();return;}setContinuousIndex(i+1);
-    }else{
-      if(state.selectedTime>=timeBounds().max){stopPlay();return;}
-      setSelectedTime(state.selectedTime+timelineStep());
+/* value chip at the top of the map */
+const chipValues={rain:null,field:null};
+let sampleTimer=0;
+function sampleChip(){
+  clearTimeout(sampleTimer);
+  sampleTimer=setTimeout(async()=>{
+    for(const [k,frame] of [['rain',state.rain?shownRain:null],['field',state.field?shownField:null]]){
+      if(!frame){chipValues[k]=null;continue;}
+      try{const view={latitude:state.map.latitude,longitude:state.map.longitude,zoom:12,width:8,height:8,ratio:1};
+        await renderer.load(frame,view);
+        const code=renderer.sampleAt(frame,state.map.latitude,state.map.longitude);
+        chipValues[k]={key:frame.key,value:code==null?null:decodeCode(frame.layer,code)};
+      }catch{chipValues[k]=null;}
     }
-  },state.mode==='radar'?700:state.mode==='continuous'?550:350);
+    updateChip();
+  },gesture?250:60);
 }
-const radarWindowLabel=h=>h===48?'2 days':h+'h';
-function updateTimeUI(){
-  const radarMode=state.mode==='radar',continuous=state.mode==='continuous';
-  dom.forecastHorizonButtons.hidden=radarMode;
-  dom.radarHistoryButtons.hidden=(!radarMode&&!continuous)||state.radarUnavailable;
-  dom.modeForecast.textContent='◈ Forecast · future';
-  dom.modeRadar.textContent=`◉ Radar · past ${radarWindowLabel(state.radarHours)}`;
-  for(const h of RADAR_WINDOWS){
-    const b=dom['radarHours'+h];b.classList.toggle('active',state.radarHours===h);b.setAttribute('aria-pressed',String(state.radarHours===h));
-  }
-  if(!state.playing)dom.playBtn.setAttribute('aria-label',radarMode?'Play observed radar history':pastActive()?'Play past model runs':'Play future forecast');
-  dom.horizonPast.hidden=!pastModelAvailable();
-  if(continuous){
-    const frames=combinedFrames(),i=continuousCursorIndex(frames,state.continuousCursor),frame=frames[i];
-    dom.timeSlider.min='0';dom.timeSlider.max=String(Math.max(1,frames.length-1));dom.timeSlider.value=String(Math.max(i,0));dom.timeSlider.step='1';dom.timeSlider.disabled=!frames.length;
-    dom.timeSlider.setAttribute('aria-label','Observed radar, then radar nowcast, then model forecast');dom.timeLabel.textContent=frame?formatTime(frame.time):'Loading…';
-    dom.startLabel.textContent=frames.length?formatTime(frames[0].time):'—';dom.endLabel.textContent=frames.length?formatTime(frames.at(-1).time):'—';
-    dom.timeRange.textContent=frame?.kind==='radar'?'OBSERVED RADAR · then nowcast and ICON':
-      frame?.kind==='nowcast'?'RADAR NOWCAST · extrapolated from radar, not observed':'ICON FORECAST · model prediction';
-  }else if(radarMode){
-    const times=timeList(),has=times.length>0;
-    const firstIndex=radarWindowStart();
-    dom.timeSlider.min=String(firstIndex);
-    dom.timeSlider.max=String(has?state.radar.frames.length-1:firstIndex+1);
-    dom.timeSlider.value=String(state.radarIndex);
-    dom.timeSlider.step='1';
-    dom.timeSlider.disabled=!has;
-    dom.timeSlider.setAttribute('aria-label',`Observed radar time, past ${radarWindowLabel(state.radarHours)}`);
-    dom.timeLabel.textContent=has?formatTime(getRadarTime()):'Loading observed radar…';
-    dom.startLabel.textContent=has?formatTime(times[0]):'—';
-    dom.endLabel.textContent=has?formatTime(times.at(-1)):'—';
-    const durationMinutes=has?Math.round((times.at(-1)-times[0])/60):0;
-    const actual=durationMinutes>=60?
-      `${Math.floor(durationMinutes/60)}h${durationMinutes%60?' '+durationMinutes%60+'m':''}`:
-      `${durationMinutes}m`;
-    dom.timeRange.textContent=has?
-      `OBSERVED RADAR · past ${actual} · 5-min scans`:
-      `OBSERVED RADAR · loading ${radarWindowLabel(state.radarHours)} history`;
-  }else{
-    const b=timeBounds(),step=timelineStep();
-    dom.timeSlider.min='0';
-    dom.timeSlider.max=String(Math.max(1,Math.floor((b.max-b.min)/step)));
-    dom.timeSlider.value=String(Math.round((state.selectedTime-b.min)/step));
-    dom.timeSlider.step='1';
-    dom.timeSlider.disabled=false;
-    dom.timeSlider.setAttribute('aria-label',pastActive()?'Past model time, earlier ICON-D2 runs (not radar)':'Future model forecast time (not radar)');
-    dom.timeLabel.textContent=formatTime(state.selectedTime);
-    dom.startLabel.textContent=formatTime(b.min,{weekday:'short',hour:'2-digit'});
-    dom.endLabel.textContent=formatTime(b.max,{weekday:'short',hour:'2-digit'});
-    const spec=iconLayerSpec(state.iconLayer);
-    dom.timeRange.textContent=pastActive()&&spec?`PAST · earlier ICON-D2 runs · ${LAYER_INFO[state.iconLayer].label.toLowerCase()} · model, not observed`:
-      state.model==='icon_eu'&&state.iconLayer==='precip'?'FUTURE FORECAST · ICON-EU · hourly rain':
-      spec?`FUTURE FORECAST · ICON-D2 · ${LAYER_INFO[state.iconLayer].label.toLowerCase()} · ${spec.step===900?'15-min':'hourly'}`:
-      `FUTURE FORECAST · ICON · ${state.horizon===48?'48h':'5 days'}`;
-  }
+function fieldValueText(layer,v){
+  if(v==null)return ['—',''];
+  const info=LAYER_INFO[layer];
+  if(info.kind==='celsius')return [String(Math.round(conv.temp(v))),state.units.temperature];
+  if(info.kind==='percent')return [String(Math.round(v)),'%'];
+  if(info.kind==='hpa')return [pressureText(v),state.units.pressure];
+  if(info.kind==='ms')return [String(Math.round(conv.windFromMs(v))),state.units.wind==='bft'?'Bft':state.units.wind];
+  if(info.kind==='degrees')return [String(Math.round(v)),'°'];
+  return [rainText(v),state.units.precipitation];
 }
-function updateReadouts(){
-  const f=state.forecasts[state.model]||null;
-  state.forecast=f;
-  state.forecastIndex=f?nearestIndex(f.hourly.time,state.selectedTime):0;
-  const temp=metricValue(state.model,'temperature');
-  dom.heroTemp.textContent=temp==null?'—°':`${fmt(temp,'temperature')}°`;
-  dom.heroTime.textContent=formatTime(chartTime())+(chartTime()<Date.now()/1000?' · ICON estimate':'');
-  dom.quickRain.textContent=`${fmt(metricValue(state.model,'precipitation'),'precipitation')} mm`;
-  dom.quickWind.textContent=`${fmt(metricValue(state.model,'wind'),'wind')} km/h`;
-  dom.quickCloud.textContent=`${fmt(metricValue(state.model,'cloud'),'cloud')}%`;
-  dom.pinTemp.textContent=temp==null?'—':`${fmt(temp,'temperature')}°`;
-  updateOverlayUI();renderWarningsList();
-  if(state.warnings&&state.showWarnings)requestMap();
-  for(const row of dom.graphStack.querySelectorAll('[data-model][data-metric]')){
-    const output=row.querySelector('.plot-value');if(!output)continue;
-    const metric=row.dataset.metric, model=row.dataset.model;
-    const v=metricValue(model,metric);
-    output.textContent=v==null?'—':`${fmt(v,metric)} ${VARIABLES[metric].unit}`;
-  }
-  for(const row of dom.graphStack.querySelectorAll('[data-compare-values]')){
-    const model=row.dataset.compareValues;
-    const val=metricValue(model,'temperature'),rain=metricValue(model,'precipitation'),cloud=metricValue(model,'cloud');
-    row.textContent=[`${fmt(val,'temperature')}°C`,`${fmt(rain,'precipitation')} mm`,`${fmt(cloud,'cloud')}%`].join(' · ');
-  }
+function chipLayer(ic,name,val,unit){
+  const s=el('span',{className:'chip-layer'});s.innerHTML=icon(ic);
+  s.append(el('span',{className:'chip-name',textContent:name}),' ',el('b',{textContent:val}),el('sup',{textContent:unit}));return s;
 }
-function refreshView(){
-  dom.locationName.textContent=state.place.name;
-  dom.headerPlace.textContent=shortPlace(state.place.name);
-  dom.modelDescription.textContent=`${MODELS[state.model].label} · ${MODELS[state.model].subtitle}`+
-    (state.forecasts[state.model]?.fromRawGrid?' · chart values from the DWD map grid':'');
-  dom.modelSelect.value=state.model;
-  const past=pastActive();
-  dom.horizonPast.hidden=!pastModelAvailable();
-  dom.horizonPast.classList.toggle('active',past);dom.horizonPast.setAttribute('aria-pressed',String(past));
-  dom.horizon48.classList.toggle('active',!past&&state.horizon===48);
-  dom.horizon120.classList.toggle('active',!past&&state.horizon===120);
-  dom.horizon48.setAttribute('aria-pressed',String(!past&&state.horizon===48));
-  dom.horizon120.setAttribute('aria-pressed',String(!past&&state.horizon===120));
-  updateCacheControls();
-  renderGraphs();updateReadouts();updateTimeUI();requestGraphs();requestMap();
+function updateChip(){
+  const nodes=[];let source=null;
+  if(state.rain){
+    // Describe the frame actually on screen; say so while the requested one loads.
+    const wanted=rainFrameAt(state.time),frame=shownRain,sampled=chipValues.rain?.key===frame?.key&&frame;
+    nodes.push(chipLayer('rain','Precipitation',sampled?rainText(chipValues.rain.value??0):'—',state.units.precipitation));
+    const kind=frame?(frame.source==='icon'?'forecast':frame.source):null,loading=wanted.frame&&frame?.key!==wanted.frame.key?' · loading':'';
+    source=kind==='radar'?{text:`Radar ${hhmm(frame.time)}${loading}`,cls:'observed'}:kind==='nowcast'?{text:`Nowcast ${hhmm(frame.time)}${loading}`,cls:'nowcast'}:
+      kind==='forecast'?{text:`ICON-D2 ${utcHour(frame.runTime)}${loading}`,cls:''}:
+      {text:wanted.frame?'Loading…':wanted.source==='forecast'&&state.icon?'Beyond ICON-D2 map':'Loading…',cls:''};
+  }
+  if(state.field){
+    const frame=shownField,sampled=chipValues.field?.key===frame?.key&&frame,[val,unit]=fieldValueText(state.field,sampled?chipValues.field.value:null);
+    nodes.push(chipLayer(LAYERS[state.field].icon,LAYERS[state.field].label,val,unit));
+    const wanted=state.icon?iconFrameAt(state.field,state.time):null;
+    source??={text:frame?`ICON-D2 ${utcHour(frame.runTime)}${wanted&&wanted.key!==frame.key?' · loading':''}`:state.icon?(wanted?'Loading…':'No map for this time'):'Loading…',cls:''};
+  }
+  if(!nodes.length)nodes.push(chipLayer('layers','No map layer','',''));
+  if(source)nodes.push(el('span',{className:'chip-source '+source.cls,textContent:source.text}));
+  dom.mapChip.replaceChildren(...nodes);
+}
+/* legend card */
+function legendModel(layer){
+  if(layer==='precip'||layer==='snow'){
+    // Log-scaled rain rate; ticks like Flowx (0, 1, 5, 20, 50 mm/h).
+    const stops=PALETTE_STOPS[layer==='snow'?'snow':'rain'],lo=Math.log(0.05),hi=Math.log(60),pos=v=>(Math.log(Math.max(.05,v))-lo)/(hi-lo);
+    const ticks=state.units.precipitation==='in/h'?[[0,'0 in/h'],[1/25.4*25.4,'0.04'],[5,'0.2'],[20,'0.8'],[50,'2']]:[[0,'0 mm/h'],[1,'1'],[5,'5'],[20,'20'],[50,'50']];
+    return {gradient:stops.map(([v,c,a])=>[pos(v),c,a]),ticks:ticks.map(([v,l])=>[v===0?0:pos(v),l])};
+  }
+  const info=LAYER_INFO[layer],stops=PALETTE_STOPS[info.palette];if(!stops)return null;
+  const v0=stops[0][0],v1=stops.at(-1)[0],pos=v=>(v-v0)/(v1-v0);
+  const label=v=>fieldValueText(layer,v)[0];
+  const unit=fieldValueText(layer,v0)[1];
+  const ticks=[v0,v0+(v1-v0)*.25,v0+(v1-v0)*.5,v0+(v1-v0)*.75,v1].map((v,i)=>[pos(v),i===0?`${label(v)} ${unit}`.trim():label(v)]);
+  return {gradient:stops.map(([v,c,a])=>[pos(v),c,Math.max(a,.55)]),ticks};
+}
+function updateLegend(){
+  const layer=state.lastPicked==='warnings'||!(state.lastPicked==='precip'?state.rain:state.lastPicked===state.field)?(state.field||(state.rain?'precip':null)):state.lastPicked;
+  const model=layer?legendModel(layer):null;
+  dom.legend.hidden=!model;if(!model)return;
+  const key=layer+state.units.precipitation+state.units.temperature+state.units.wind+state.units.pressure;
+  if(dom.legend.dataset.key===key)return;dom.legend.dataset.key=key;dom.legend.dataset.layer=layer;
+  const rgba=(c,a)=>{const n=parseInt(c.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${Math.min(1,a+.25)})`;};
+  dom.legendBar.style.background=`linear-gradient(90deg,${model.gradient.map(([p,c,a])=>`${rgba(c,a)} ${(p*100).toFixed(1)}%`).join(',')})`;
+  dom.legendTicks.replaceChildren(...model.ticks.map(([p,l])=>{const s=document.createElement('span');s.textContent=l;s.style.left=(p*100)+'%';return s;}));
+}
+/* layer bar */
+function renderLayerBar(){
+  dom.layerButtons.replaceChildren(...state.bar.map(id=>{
+    const b=document.createElement('button');b.dataset.layer=id;b.setAttribute('aria-label',LAYERS[id].label);b.title=LAYERS[id].label;
+    const on=id==='precip'?state.rain:id==='warnings'?state.warningsOn:state.field===id;
+    b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on));b.innerHTML=icon(LAYERS[id].icon);return b;}));
+}
+function toggleLayer(id){
+  const L=LAYERS[id];if(!L)return;
+  if(L.kind==='rain')state.rain=!state.rain;
+  else if(L.kind==='warnings'){state.warningsOn=!state.warningsOn;warningsKey='';}
+  else state.field=state.field===id?null:id;
+  state.lastPicked=id;save();renderLayerBar();updateLegend();requestMap();
 }
 
-function createPlotBody(model,metric){
-  const body=document.createElement('div');body.className='plot-body';
-  body.dataset.model=model;body.dataset.metric=metric;
-  const canvas=document.createElement('canvas');canvas.setAttribute('aria-label',`${MODELS[model].label} ${metric==='composite'?'precipitation, temperature, and clouds':VARIABLES[metric].name} graph`);
-  const line=document.createElement('div');line.className='plot-cursor';line.setAttribute('aria-hidden','true');
-  body.append(canvas,line);
-  return body;
+/* ---------- gestures ---------- */
+let gesture=null;
+const pointers=new Map();
+function referencePx(){return dom.map.getBoundingClientRect().width||400;}
+function startScrub(x,y,t){
+  const {min,max}=timeBounds(),range=max-min,ref=referencePx();
+  return createScrub({start:state.time,min,max,x,y,t,
+    horizontal:secondsPerPixel(state.swipe.horizontal,{rangeSeconds:range,referencePx:ref}),
+    vertical:secondsPerPixel(state.swipe.vertical,{rangeSeconds:range,referencePx:ref})});
 }
-function renderGraphs(){
-  dom.graphStack.replaceChildren();
-  if(state.view==='compare'){
-    for(const model of MODEL_IDS){
-      const outer=document.createElement('article');outer.className='compare-row';outer.dataset.comparison=model;
-      const heading=document.createElement('div');heading.className='compare-head';
-      const name=document.createElement('strong');name.textContent=`DWD ${MODELS[model].label}`;
-      const summary=document.createElement('span');summary.className='compare-values';summary.dataset.compareValues=model;
-      heading.append(name,summary);
-      const plot=createPlotBody(model,'composite');
-      const key=document.createElement('div');key.className='compare-key';key.innerHTML='<span class="key-rain">▰ Rain</span><span class="key-temp">━ Temperature</span><span class="key-cloud">▧ Clouds</span>';
-      outer.append(heading,plot,key);
-      if(state.modelErrors[model]){const error=document.createElement('div');error.className='plot-no-data';error.textContent=state.modelErrors[model];plot.append(error);}
-      else if(!state.forecasts[model]){const busy=document.createElement('div');busy.className='plot-no-data';busy.textContent='Loading model forecast…';plot.append(busy);}
-      dom.graphStack.append(outer);
-    }
-  }else{
-    for(const metric of ['cloud','precipitation','temperature','wind']){
-      const row=document.createElement('article');row.className='plot-row';row.dataset.model=state.model;row.dataset.metric=metric;
-      const label=document.createElement('div');label.className='plot-label';
-      const name=document.createElement('strong');name.textContent=VARIABLES[metric].name;
-      const details=document.createElement('small');details.textContent=VARIABLES[metric].unit+(state.mode!=='forecast'?' · past: ICON model':'');
-      label.append(name,details);
-      const val=document.createElement('span');val.className='plot-value';
-      const plot=createPlotBody(state.model,metric);
-      row.append(label,plot,val);dom.graphStack.append(row);
-    }
-  }
-  requestCursor();requestGraphs();
+let momentumFrame=0;
+function runMomentum(scrub,m){
+  cancelAnimationFrame(momentumFrame);
+  const start=performance.now(),dur=180;let applied=0;
+  const tick=now=>{const k=Math.min(1,(now-start)/dur),eased=1-(1-k)**3,target=m.px*eased;
+    setTime(scrub.applyMomentum(m.axis,target-applied));applied=target;if(k<1)momentumFrame=requestAnimationFrame(tick);};
+  momentumFrame=requestAnimationFrame(tick);
 }
-function plotAreaData(f,metric,min,max){
-  if(!f)return [];
-  const key=VARIABLES[metric].key;
-  return f.hourly.time.map((t,i)=>({t,v:f.hourly[key][i]})).filter(({t})=>t>=min&&t<=max);
+function zoomAround(newZoom,sx,sy){
+  const r=dom.map.getBoundingClientRect(),z0=state.map.zoom,z1=clamp(newZoom,3,11);
+  const c0=mercator(state.map.latitude,state.map.longitude,z0),px=c0.x+(sx-r.width/2),py=c0.y+(sy-r.height/2);
+  const k=2**(z1-z0),c1x=px*k-(sx-r.width/2),c1y=py*k-(sy-r.height/2);
+  const p=unmercator(c1x,c1y,z1);state.map={latitude:clampLatitude(p.lat),longitude:wrappedLongitude(p.lon),zoom:z1};
 }
-function drawGraphs(){
-  for(const body of dom.graphStack.querySelectorAll('.plot-body')){
-    const canvas=body.querySelector('canvas'),r=body.getBoundingClientRect();
-    if(r.width<12||r.height<12)continue;
-    const dpr=Math.min(window.devicePixelRatio||1,2);
-    canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);
-    const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
-    const w=r.width,h=r.height,plotH=h-15;
-    ctx.clearRect(0,0,w,h);
-    const model=body.dataset.model,metric=body.dataset.metric;
-    const f=state.forecasts[model],history=state.pastForecasts[model],{min,max}=chartBounds();
-    const x=t=>timelinePosition(t,min,max)*w;
-    const now=Date.now()/1000,hasPast=min<now;
-    if(hasPast){
-      ctx.fillStyle='#33536b45';ctx.fillRect(0,0,x(now),plotH);
-    }
-    for(let i=0;i<=state.horizon;i+=24){
-      const x0=x(min+i*3600),x1=x(Math.min(max,min+(i+24)*3600));
-      if((i/24)%2===1){ctx.fillStyle='#1a324b';ctx.fillRect(x0,0,x1-x0,plotH);}
-    }
-    ctx.strokeStyle='#35516a';ctx.lineWidth=.65;
-    for(let j=1;j<=3;j++){const y=plotH*j/4;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
-    const tick=state.horizon===48&&max-min<=72*3600?12:24;
-    for(let hours=0;hours<=state.horizon;hours+=tick){
-      const t=state.anchor+hours*3600,xx=x(t);
-      // x() clamps to the plot; skip ticks outside the window and the one under the start label.
-      if(t<min||t>max||hasPast&&xx<34)continue;
-      ctx.strokeStyle='#48637c66';ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,plotH);ctx.stroke();
-      ctx.textAlign=hours===0?'left':hours===state.horizon?'right':'center';
-      ctx.fillStyle='#a3bad3';ctx.font='10px system-ui';
-      ctx.fillText(formatTime(t,{weekday:'short',hour:'2-digit'}),xx,h-3);
-    }
-    if(hasPast){
-      ctx.strokeStyle='#a7d8f0';ctx.lineWidth=1.25;ctx.setLineDash([3,2]);ctx.beginPath();
-      ctx.moveTo(x(now),0);ctx.lineTo(x(now),plotH);ctx.stroke();ctx.setLineDash([]);
-      ctx.fillStyle='#c8d8e7';ctx.font='9px system-ui';ctx.textAlign='left';
-      ctx.fillText('PAST · ICON estimate',5,10);
-      ctx.textAlign='right';ctx.fillText('FORECAST',w-5,10);
-      ctx.textAlign='left';ctx.fillText(formatTime(min,{hour:'2-digit',minute:'2-digit'}),0,h-3);
-    }
-    if(!f&&!history)continue;
-    const plot=(variable,{opacity=1,lineWidth=1.7,fill=false}={})=>{
-      const series=chartSeries(f,hasPast?history:null,VARIABLES[variable].key,min,max,now);
-      const valid=[...series.past,...series.future].map(d=>d.v).filter(Number.isFinite);
-      const {min:ymin,max:ymax}=axisLimits(valid,variable);
-      const scale=v=>plotH-3-((v-ymin)/(ymax-ymin))*(plotH-9);
-      const color=VARIABLES[variable].color;
-      const renderSegment=(dataset,historical)=>{
-        if(!dataset.length)return;
-        if(VARIABLES[variable].chart==='bar'){
-          const barWidth=Math.max(1.5,Math.min(13,w*3600/(max-min)*.8));
-          ctx.fillStyle=color;ctx.globalAlpha=opacity*(historical ? 0.46 : 1);
-          // Each value is the total of the hour ending at t (a rolling sum on the
-          // 15-minute ICON-D2 axis), so only full hours get an hour-wide bar;
-          // otherwise one shower would be drawn as four overlapping bars.
-          for(const {t,v}of dataset)if(Number.isFinite(v)&&v>0&&t%3600===0){
-            const xx=x(t);ctx.fillRect(xx-barWidth/2,scale(v),barWidth,Math.max(1,scale(0)-scale(v)));
-          }
-        }else{
-          ctx.beginPath();let drawing=false,firstX=null,lastX=null;
-          for(const {t,v}of dataset){
-            if(!Number.isFinite(v)){drawing=false;continue;}
-            const xx=x(t),yy=scale(v);
-            if(!drawing){ctx.moveTo(xx,yy);drawing=true;if(firstX===null)firstX=xx;}
-            else ctx.lineTo(xx,yy);
-            lastX=xx;
-          }
-          if(fill&&firstX!==null&&lastX!==null){
-            ctx.lineTo(lastX,plotH);ctx.lineTo(firstX,plotH);ctx.closePath();
-            ctx.fillStyle=color;ctx.globalAlpha=.13*opacity*(historical ? 0.6 : 1);ctx.fill();
-          }
-          ctx.strokeStyle=color;ctx.globalAlpha=opacity*(historical ? 0.65 : 1);
-          ctx.lineWidth=lineWidth;ctx.lineJoin='round';
-          ctx.setLineDash(historical?[4,3]:[]);ctx.stroke();ctx.setLineDash([]);
-        }
-        ctx.globalAlpha=1;
-      };
-      renderSegment(series.past,true);
-      renderSegment(series.future,false);
-    };
-    if(metric==='composite'){
-      plot('cloud',{opacity:.52,fill:true,lineWidth:1});
-      plot('precipitation',{opacity:.78});
-      plot('temperature',{lineWidth:2.1});
-    }else plot(metric,{fill:metric==='cloud'});
-    if(f?.hourly?.time?.length&&f.hourly.time.at(-1)<max-1800){
-      ctx.fillStyle='#9ebbd044';ctx.fillRect(x(f.hourly.time.at(-1))+2,0,w-x(f.hourly.time.at(-1)),plotH);
-    }
-  }
-  updateCursor();
+function panBy(dx,dy){
+  const p=mercator(state.map.latitude,state.map.longitude,state.map.zoom),q=unmercator(p.x-dx,p.y-dy,state.map.zoom);
+  state.map.latitude=clampLatitude(q.lat);state.map.longitude=wrappedLongitude(q.lon);
 }
-function updateCursor(){
-  const {min,max}=chartBounds();
-  const t=chartTime(),percentage=timelinePosition(t,min,max)*100,outside=t<min||t>max;
-  for(const cursor of dom.graphStack.querySelectorAll('.plot-cursor')){cursor.style.left=`${percentage}%`;cursor.style.visibility=outside?'hidden':'';}
-}
-function timeFromGraphPointer(event,body){
-  const r=body.getBoundingClientRect();
-  stopPlay();const b=chartBounds(),time=b.min+clamp((event.clientX-r.left)/r.width,0,1)*(b.max-b.min);
-  if(state.mode==='continuous'){
-    const frames=combinedFrames();if(frames.length)setContinuousIndex(nearestIndex(frames.map(f=>f.time),time));
-  }else if(state.mode==='radar'){
-    if(time<Date.now()/1000||time<=state.radar?.frames?.at(-1)?.time){
-      const times=timeList();if(times.length)setRadarIndex(radarWindowStart()+nearestIndex(times,time));
-    }else{
-      setMode('continuous');const frames=combinedFrames();
-      if(frames.length)setContinuousIndex(nearestIndex(frames.map(f=>f.time),time));
-    }
-  }else{if(pastActive())setPastModel(false);setSelectedTime(time);}
-}
-function tileLayer(element,items){
-  const existing=new Map([...element.children].map(n=>[n.dataset.key,n]));const keys=new Set();
-  for(const t of items){
-    keys.add(t.key);let img=existing.get(t.key);
-    if(!img){
-      img=document.createElement('img');img.dataset.key=t.key;img.src=t.url;img.alt='';img.draggable=false;img.decoding='async';
-      img.addEventListener('error',()=>{
-        img.style.opacity=0;
-        if(element===dom.cloudTiles && state.showClouds && !cloudWarningIssued){
-          cloudWarningIssued=true;showMessage('DWD satellite image unavailable; try again later.',true);
-        }
-      });element.append(img);
-    }
-    img.style.width=`${t.size}px`;img.style.height=`${t.size}px`;
-    img.style.left=`${t.left}px`;img.style.top=`${t.top}px`;
-  }
-  for(const [key,node]of existing)if(!keys.has(key))node.remove();
-}
-function renderMap(){
-  if(state.view==='compare')return;
-  const r=dom.map.getBoundingClientRect();if(r.width<5||r.height<5)return;
-  const z=state.map.zoom,point=mercator(state.map.latitude,state.map.longitude,z),
-    topLeft={x:point.x-r.width/2,y:point.y-r.height/2},maxTile=2**z;
-  const tiles=[];
-  const minx=Math.floor(topLeft.x/256),maxx=Math.floor((topLeft.x+r.width)/256),
-    miny=Math.max(0,Math.floor(topLeft.y/256)),maxy=Math.min(maxTile-1,Math.floor((topLeft.y+r.height)/256));
-  for(let x=minx;x<=maxx;x++)for(let y=miny;y<=maxy;y++){
-    const xx=((x%maxTile)+maxTile)%maxTile;
-    tiles.push({key:`${z}/${xx}/${y}`,url:`https://tile.openstreetmap.org/${z}/${xx}/${y}.png`,size:256,left:x*256-topLeft.x,top:y*256-topLeft.y});
-  }
-  tileLayer(dom.baseTiles,tiles);
-  const view=mapView();
-  try{paintLayers(view);}catch(e){showMessage('Raster render error: '+e.message,true);}
-  try{drawWarnings(view);}catch(e){dom.warningsCanvas.hidden=true;}
-  // DWD Meteosat imagery is the most recent observed scene, not a future cloud forecast.
-  if(state.showClouds){
-    const satZoom=Math.min(z,9),scale=2**(z-satZoom),tileSize=256*scale,limit=2**satZoom;
-    const clouds=[];
-    const x0=Math.floor(topLeft.x/tileSize),x1=Math.floor((topLeft.x+r.width)/tileSize),
-      y0=Math.max(0,Math.floor(topLeft.y/tileSize)),y1=Math.min(limit-1,Math.floor((topLeft.y+r.height)/tileSize));
-    for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
-      const xx=((x%limit)+limit)%limit;
-      clouds.push({key:`${satZoom}/${xx}/${y}`,url:dwdWmsTileURL(DWD_SATELLITE_CLOUDS,satZoom,x,y),
-        size:tileSize,left:x*tileSize-topLeft.x,top:y*tileSize-topLeft.y});
-    }
-    tileLayer(dom.cloudTiles,clouds);
-  }else dom.cloudTiles.replaceChildren();
-  const pin=mercator(state.place.latitude,state.place.longitude,z),world=256*2**z;
-  let dx=pin.x-point.x;if(dx>world/2)dx-=world;if(dx< -world/2)dx+=world;
-  const x=r.width/2+dx,y=r.height/2+(pin.y-point.y);
-  dom.mapPin.style.left=`${x}px`;dom.mapPin.style.top=`${y}px`;
-  dom.mapPin.hidden=x< -50||x>r.width+50||y< -50||y>r.height+50;
-}
-function pan(dx,dy){
-  const p=mercator(state.map.latitude,state.map.longitude,state.map.zoom),result=unmercator(p.x-dx,p.y-dy,state.map.zoom);
-  state.map.latitude=clampLatitude(result.lat);state.map.longitude=wrappedLongitude(result.lon);requestMap();
-}
-function zoom(delta){state.map.zoom=clamp(state.map.zoom+delta,3,12);requestMap();}
-function radarSwipeTimestamp(startTime,dx,dy,axis){
-  const speeds={horizontalHours:state.horizontalHours/12,verticalHours:state.verticalHours/12,stepSeconds:300,
-    minSeconds:timeList()[0]??0,maxSeconds:timeList().at(-1)??0};
-  return scrubTimestamp(startTime,dx,dy,axis,speeds);
+let centerTimer=0;
+/** After the map moved, the forecast place follows the centre marker. */
+function scheduleCenterPlace(){
+  clearTimeout(centerTimer);
+  centerTimer=setTimeout(()=>{
+    const r=dom.map.getBoundingClientRect(),a=mercator(state.place.latitude,state.place.longitude,state.map.zoom),
+      b=mercator(state.map.latitude,state.map.longitude,state.map.zoom);
+    save();
+    if(Math.hypot(a.x-b.x,a.y-b.y)<Math.max(3,r.width*.01))return;
+    setPlace({name:'Panned location',latitude:state.map.latitude,longitude:state.map.longitude},{center:false});
+  },450);
 }
 function wireMapGestures(){
-  dom.map.addEventListener('wheel',event=>{event.preventDefault();zoom(event.deltaY<0?1:-1);},{passive:false});
-  dom.map.addEventListener('pointerdown',event=>{
-    if(event.target.closest('button,a,input,select'))return;
-    dom.map.setPointerCapture(event.pointerId);
-    pointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
-    if(pointers.size===1)drag={startX:event.clientX,startY:event.clientY,lastX:event.clientX,lastY:event.clientY,
-      startTime:state.mode==='radar'?getRadarTime():state.selectedTime,startContinuousIndex:state.mode==='continuous'?continuousCursorIndex(combinedFrames(),state.continuousCursor):null,axis:null,wasMulti:false,mouse:event.pointerType==='mouse'};
-    else if(pointers.size===2){
-      const [a,b]=[...pointers.values()];drag={wasMulti:true,midX:(a.x+b.x)/2,midY:(a.y+b.y)/2,dist:Math.hypot(a.x-b.x,a.y-b.y)};
+  const el=dom.map;
+  el.addEventListener('pointerdown',e=>{
+    if(e.target.closest('button,a,input,select,.map-chip'))return;
+    el.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    cancelAnimationFrame(momentumFrame);
+    if(pointers.size===1){
+      const pan=e.pointerType==='mouse'&&(e.ctrlKey||e.metaKey||e.button===2);
+      gesture={kind:pan?'pan':'scrub',scrub:pan?null:startScrub(e.clientX,e.clientY,e.timeStamp),last:{x:e.clientX,y:e.clientY}};
+    }else if(pointers.size===2){
+      const [a,b]=[...pointers.values()];
+      gesture={kind:'map',mid:{x:(a.x+b.x)/2,y:(a.y+b.y)/2},dist:Math.hypot(a.x-b.x,a.y-b.y),moved:false};
     }
   });
-  dom.map.addEventListener('pointermove',event=>{
-    if(!pointers.has(event.pointerId)||!drag)return;
-    pointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
-    if(pointers.size===2){
-      const [a,b]=[...pointers.values()],midX=(a.x+b.x)/2,midY=(a.y+b.y)/2,dist=Math.hypot(a.x-b.x,a.y-b.y);
-      pan(midX-drag.midX,midY-drag.midY);
-      if(dist>drag.dist*1.45){zoom(1);drag.dist=dist;}
-      else if(dist<drag.dist/1.45){zoom(-1);drag.dist=dist;}
-      drag.midX=midX;drag.midY=midY;
-    }else if(pointers.size===1){
-      const dx=event.clientX-drag.startX,dy=event.clientY-drag.startY;
-      if(drag.mouse&&!event.shiftKey){pan(event.clientX-drag.lastX,event.clientY-drag.lastY);}
-      else if(drag.startTime!=null){
-        drag.axis??=pickGestureAxis(dx,dy);
-        if(drag.axis){
-          stopPlay();
-          if(state.mode==='continuous'){
-            const direction=drag.axis==='vertical'?-dy:dx;
-            const speed=drag.axis==='vertical'?state.verticalHours:state.horizontalHours;
-            const step=Math.round(direction*speed/100*4);
-            setContinuousIndex(drag.startContinuousIndex+step);
-          }else if(state.mode==='radar'){
-            const t=radarSwipeTimestamp(drag.startTime,dx,dy,drag.axis);
-            setRadarIndex(nearestIndex(timeList(),t));
-          }else{
-            const bound=timeBounds();
-            const t=scrubTimestamp(drag.startTime,dx,dy,drag.axis,{
-              horizontalHours:state.horizontalHours,verticalHours:state.verticalHours,
-              minSeconds:bound.min,maxSeconds:bound.max,stepSeconds:timelineStep(),
-            });
-            setSelectedTime(t);
-          }
-        }
-      }
-      drag.lastX=event.clientX;drag.lastY=event.clientY;
-    }
+  el.addEventListener('pointermove',e=>{
+    if(!pointers.has(e.pointerId)||!gesture)return;
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(gesture.kind==='map'&&pointers.size>=2){
+      const [a,b]=[...pointers.values()],mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2},dist=Math.hypot(a.x-b.x,a.y-b.y);
+      const r=el.getBoundingClientRect();
+      panBy(mid.x-gesture.mid.x,mid.y-gesture.mid.y);
+      if(gesture.dist>10&&dist>10)zoomAround(state.map.zoom+Math.log2(dist/gesture.dist),mid.x-r.left,mid.y-r.top);
+      if(Math.hypot(mid.x-gesture.mid.x,mid.y-gesture.mid.y)>0.5)gesture.moved=true;
+      gesture.mid=mid;gesture.dist=dist;requestMap();
+    }else if(gesture.kind==='pan'){panBy(e.clientX-gesture.last.x,e.clientY-gesture.last.y);gesture.last={x:e.clientX,y:e.clientY};gesture.moved=true;requestMap();}
+    else if(gesture.kind==='scrub'){setTime(gesture.scrub.move(e.clientX,e.clientY,e.timeStamp));}
   });
-  const pointerEnd=event=>{
-    if(!pointers.has(event.pointerId))return;
-    if(pointers.size===1&&drag&&!drag.wasMulti&&!drag.axis&&Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)<7){
-      const rect=dom.map.getBoundingClientRect();
-      const m=mercator(state.map.latitude,state.map.longitude,state.map.zoom);
-      const p=unmercator(m.x+(event.clientX-rect.left-rect.width/2),m.y+(event.clientY-rect.top-rect.height/2),state.map.zoom);
-      setPlace({name:'Selected map point',latitude:p.lat,longitude:p.lon},{center:false});
-    }
-    pointers.delete(event.pointerId);
-    if(pointers.size<2)drag=null;
+  const end=e=>{
+    if(!pointers.has(e.pointerId))return;
+    pointers.delete(e.pointerId);
+    if(!gesture)return;
+    if(gesture.kind==='scrub'&&pointers.size===0){
+      const m=gesture.scrub.release(e.timeStamp);if(m)runMomentum(gesture.scrub,m);gesture=null;
+    }else if(gesture.kind==='map'){
+      if(gesture.moved)scheduleCenterPlace();else save();
+      // The remaining finger must not start a scrub mid-gesture.
+      gesture=pointers.size?{kind:'ignore'}:null;requestMap();
+    }else if(gesture.kind==='pan'){if(gesture.moved)scheduleCenterPlace();gesture=null;}
+    else if(pointers.size===0)gesture=null;
   };
-  dom.map.addEventListener('pointerup',pointerEnd);dom.map.addEventListener('pointercancel',pointerEnd);
+  el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+  el.addEventListener('contextmenu',e=>e.preventDefault());
+  el.addEventListener('wheel',e=>{e.preventDefault();const r=el.getBoundingClientRect();
+    zoomAround(state.map.zoom-e.deltaY/(e.deltaMode?3:300),e.clientX-r.left,e.clientY-r.top);requestMap();clearTimeout(centerTimer);
+    centerTimer=setTimeout(save,300);},{passive:false});
 }
+function wireGraphGestures(){
+  let press=null;
+  dom.graphs.addEventListener('pointerdown',e=>{
+    const node=e.target.closest('.graph');if(!node)return;
+    press={node,x:e.clientX,y:e.clientY,id:e.pointerId,timer:setTimeout(()=>{
+      const p=press;press=null;if(p)openGraphMenu(Number(p.node.dataset.index),p.x,p.y);},520)};
+  });
+  dom.graphs.addEventListener('pointermove',e=>{if(press&&e.pointerId===press.id&&Math.hypot(e.clientX-press.x,e.clientY-press.y)>8){clearTimeout(press.timer);press=null;}});
+  const up=e=>{
+    if(!press||e.pointerId!==press.id)return;clearTimeout(press.timer);
+    const r=press.node.getBoundingClientRect(),v=timeView();press=null;
+    if(e.type==='pointerup')setTime(v.start+clamp((e.clientX-r.left)/r.width,0,1)*(v.end-v.start));
+  };
+  dom.graphs.addEventListener('pointerup',up);dom.graphs.addEventListener('pointercancel',up);
+  dom.graphs.addEventListener('contextmenu',e=>e.preventDefault());
+}
+function wireDays(){
+  let lastTap=0;
+  dom.days.addEventListener('click',e=>{
+    const b=e.target.closest('button');if(!b)return;
+    const now=performance.now();
+    if(now-lastTap<350){lastTap=0;openCompare();return;}
+    lastTap=now;toast('Double-tap a day to compare all models');
+  });
+}
+
+/* ---------- places ---------- */
+function setPlace(place,{center=true}={}){
+  if(!validPlace(place))return;
+  state.place={name:place.name,latitude:clampLatitude(place.latitude),longitude:wrappedLongitude(place.longitude)};
+  if(center){state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;}
+  state.point=null;placeWarnings=null;save();updateHeader();renderMeteo();updateReadout();requestMap();void loadPoint();
+}
+function updateHeader(){
+  dom.placeName.textContent=state.place.name.split(',')[0]||state.place.name;
+  const s=SOURCE_OPTIONS.find(x=>x.id===state.source);
+  dom.modelName.textContent=s.id==='seamless'?'DWD ICON-D2 / EU / Global':s.label+(s.id==='icon_d2'?' 2 km':s.id==='icon_eu'?' 7 km':' 11 km');
+}
+function openDrawer(){renderPlaces();dom.drawer.hidden=false;dom.scrim.hidden=false;dom.placeBtn.setAttribute('aria-expanded','true');}
+function closeDrawer(){dom.drawer.hidden=true;dom.scrim.hidden=true;dom.placeBtn.setAttribute('aria-expanded','false');}
+function renderPlaces(){
+  dom.placesList.replaceChildren(...state.favorites.map((p,i)=>{
+    const row=document.createElement('div');row.className='place-row'+(placeKey(p)===placeKey(state.place)?' active':'');
+    const choose=document.createElement('button');choose.className='choose';choose.innerHTML=icon('locate')+html`<span>${p.name}</span>`;
+    choose.addEventListener('click',()=>{setPlace(p);closeDrawer();});
+    const rm=document.createElement('button');rm.className='remove';rm.textContent='×';rm.setAttribute('aria-label','Remove '+p.name);
+    rm.addEventListener('click',()=>{state.favorites.splice(i,1);save();renderPlaces();});
+    row.append(choose,rm);return row;}));
+  const saved=state.favorites.some(p=>placeKey(p)===placeKey(state.place));
+  dom.addPlaceBtn.disabled=saved;dom.addPlaceBtn.lastChild.textContent=saved?'Place saved':'Save this place';
+}
+
+/* ---------- menus, dialogs and pages ---------- */
+function openMenu(items,x,y){
+  const m=dom.popupMenu;m.replaceChildren(...items.map(([label,ic,fn])=>{const b=document.createElement('button');b.setAttribute('role','menuitem');
+    b.innerHTML=icon(ic)+html`<span>${label}</span>`;b.addEventListener('click',()=>{closeMenu();fn();});return b;}));
+  m.hidden=false;const r=m.getBoundingClientRect();
+  m.style.left=clamp(x,8,innerWidth-r.width-8)+'px';m.style.top=clamp(y,8,innerHeight-r.height-8)+'px';
+  dom.scrim.hidden=false;dom.scrim.dataset.for='menu';
+}
+function closeMenu(){dom.popupMenu.hidden=true;if(dom.scrim.dataset.for==='menu'){dom.scrim.hidden=true;dom.scrim.dataset.for='';}}
+/** Generic dialog: title, body element, actions [{label,fn,left}] (fn returning false keeps it open). */
+function openDialog(title,body,actions=[{label:'Close'}]){
+  const d=document.createElement('div');d.className='dialog';d.setAttribute('role','dialog');d.setAttribute('aria-label',title);
+  const t=document.createElement('div');t.className='dialog-title';t.textContent=title;
+  const b=document.createElement('div');b.className='dialog-body';b.append(body);
+  const a=document.createElement('div');a.className='dialog-actions';
+  for(const act of actions){const btn=document.createElement('button');btn.textContent=act.label;if(act.left)btn.className='left';
+    btn.addEventListener('click',()=>{if(act.fn?.()===false)return;closeDialog();});a.append(btn);}
+  d.append(t,b,a);dom.dialogLayer.replaceChildren(d);dom.dialogLayer.hidden=false;
+}
+function closeDialog(){dom.dialogLayer.hidden=true;dom.dialogLayer.replaceChildren();}
+function openPage(title,subtitle,body,{onClose}={}){
+  const bar=document.createElement('div');bar.className='page-bar';
+  const back=document.createElement('button');back.className='round-button';back.setAttribute('aria-label','Back');back.innerHTML=ICONS.back;
+  const h=document.createElement('h2');h.textContent=title;if(subtitle){const s=document.createElement('small');s.textContent=subtitle;h.append(s);}
+  bar.append(back,h);
+  const content=document.createElement('div');content.className='page-body';content.append(body);
+  dom.page.replaceChildren(bar,content);dom.page.hidden=false;
+  back.addEventListener('click',()=>{dom.page.hidden=true;dom.page.replaceChildren();onClose?.();});
+}
+function el(tag,props={},...children){const n=Object.assign(document.createElement(tag),props);n.append(...children);return n;}
+function select(options,value,onChange){
+  const s=el('select');for(const o of options){const opt=el('option',{value:o.value??o,textContent:o.label??o});s.append(opt);}
+  s.value=value;s.addEventListener('change',()=>onChange(s.value));return s;
+}
+function fieldRow(label,control){return el('div',{className:'field-row'},el('label',{textContent:label}),control);}
+
+function openMore(){
+  const r=dom.moreBtn.getBoundingClientRect();
+  openMenu([['Share','share',share],['Refresh','refresh',refresh]],r.right-190,r.bottom+4);
+}
+async function share(){
+  const url=new URL(location.href);url.search=`?lat=${state.place.latitude.toFixed(4)}&lon=${state.place.longitude.toFixed(4)}`;
+  try{if(navigator.share)await navigator.share({title:'OpenWetter · '+state.place.name,url:url.href});
+    else{await navigator.clipboard.writeText(url.href);toast('Link copied');}}catch{/* cancelled */}
+}
+function refresh(){void loadIconRun({fresh:true});state.point=null;void loadPoint();toast('Refreshing…');}
+function openInfo(){
+  const f=state.point,dl=el('dl',{className:'info-grid'});
+  const row=(k,v)=>dl.append(el('dt',{textContent:k}),el('dd',{textContent:v}));
+  row('Place',`${state.place.name} (${state.place.latitude.toFixed(3)}, ${state.place.longitude.toFixed(3)})`);
+  row('Map model',state.icon?`DWD ICON-D2 run ${dayTime(state.icon.runTime)} (${utcHour(state.icon.runTime)})`:state.iconError||'loading…');
+  row('Radar',state.radar?`observed until ${dayTime(state.radar.latest)} · DWD RADOLAN`:'unavailable');
+  row('Nowcast',state.nowcast?`issued ${dayTime(state.nowcast.issued)} · DWD RADVOR, next 2 h`:'unavailable');
+  row('Warnings',state.warnings?`${state.warnings.warnings.length} active or upcoming · DWD`:'unavailable');
+  row('Charts',f?`${Object.keys(f.models).map(m=>MODEL_LABELS[m]).join(' → ')} via Open-Meteo`:state.pointError||'loading…');
+  if(f?.transitions.length)row('Model changes',f.transitions.map(t=>`${MODEL_LABELS[t.from]} → ${MODEL_LABELS[t.to]} at ${dayTime(t.time)}`).join('; '));
+  const body=el('div',{},el('div',{className:'page-section',textContent:'Sources'}),dl,
+    el('div',{className:'page-section',textContent:'How to read the map'}),
+    el('p',{className:'note',textContent:'Precipitation is observed DWD radar up to the latest scan, then the DWD radar nowcast (about 2 hours), then the ICON-D2 model forecast. The label at the top right of the map says which one you are looking at. Other layers are ICON-D2 model fields; earlier hours come from earlier model runs.'}),
+    el('div',{className:'page-section',textContent:'Attributions'}),
+    el('p',{className:'note',innerHTML:'Weather data: <a href="https://opendata.dwd.de/" target="_blank" rel="noreferrer">Deutscher Wetterdienst</a> (CC BY 4.0). Point forecasts: <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a> (CC BY 4.0). Base map: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors. Code: <a href="https://github.com/e-kotov/OpenWetter" target="_blank" rel="noreferrer">github.com/e-kotov/OpenWetter</a>.'}));
+  openPage('Info','',body);
+}
+function openSource(){
+  const list=el('div');
+  for(const s of SOURCE_OPTIONS){
+    const b=el('button',{className:'model-row'+(state.source===s.id?' active':'')});b.innerHTML=icon('layers')+html`<span>${s.label}<small>${s.note}</small></span>`;
+    b.addEventListener('click',()=>{state.source=s.id;save();updateHeader();drawGraphs();updateReadout();closeDialog();});list.append(b);
+  }
+  list.append(el('p',{className:'note',textContent:'Charts follow the chosen model. Maps are ICON-D2 (Germany and neighbours) plus observed radar.'}));
+  openDialog('Weather model',list,[{label:'Close'}]);
+}
+function openLayerEditor(){
+  let draft=[...state.bar],tab='select';
+  const body=el('div');
+  const render=()=>{
+    const tabs=el('div',{className:'tabs'});
+    for(const [id,label] of [['select','Select'],['order','Order']]){const b=el('button',{textContent:label,className:tab===id?'active':''});
+      b.addEventListener('click',()=>{tab=id;render();});tabs.append(b);}
+    const list=el('div');
+    if(tab==='select')for(const [id,L] of Object.entries(LAYERS)){
+      const cb=el('input',{type:'checkbox',checked:draft.includes(id)});cb.setAttribute('aria-label',L.label);
+      cb.addEventListener('change',()=>{draft=cb.checked?[...draft,id]:draft.filter(x=>x!==id);});
+      const row=el('label',{className:'list-row'});row.innerHTML=icon(L.icon);row.append(el('span',{className:'label',textContent:L.label}),cb);list.append(row);
+    }else draft.forEach((id,i)=>{
+      const row=el('div',{className:'list-row'});row.innerHTML=icon(LAYERS[id].icon);row.append(el('span',{className:'label',textContent:LAYERS[id].label}));
+      for(const [dir,ic] of [[-1,'up'],[1,'down']]){const b=el('button',{className:'order'});b.innerHTML=ICONS[ic];b.setAttribute('aria-label',(dir<0?'Move up ':'Move down ')+LAYERS[id].label);
+        b.disabled=i+dir<0||i+dir>=draft.length;b.addEventListener('click',()=>{const j=i+dir;[draft[i],draft[j]]=[draft[j],draft[i]];render();});row.append(b);}
+      list.append(row);});
+    body.replaceChildren(tabs,list);
+  };
+  render();
+  openDialog('Map menu',body,[{label:'Reset',left:true,fn:()=>{draft=[...DEFAULT_BAR];render();return false;}},{label:'Cancel'},
+    {label:'Save',fn:()=>{if(!draft.length){toast('Choose at least one layer');return false;}state.bar=draft;
+      if(state.field&&!draft.includes(state.field))state.field=null;save();renderLayerBar();requestMap();}}]);
+}
+function openSpectrum(){
+  const layer=dom.legend.dataset.layer,key=layer==='precip'?'rain':'field';
+  if(!layer)return;
+  let value=state.opacity[key];
+  const out=el('output',{textContent:Math.round(value*100)+' %'});
+  const range=el('input',{type:'range',min:'10',max:'100',step:'5',value:String(Math.round(value*100))});
+  range.addEventListener('input',()=>{value=Number(range.value)/100;out.textContent=range.value+' %';state.opacity[key]=value;requestMap();crossfades[key].stop({forget:false});});
+  const before=state.opacity[key];
+  const body=el('div',{},fieldRow('Opacity',el('span',{},range,' ',out)),
+    el('div',{className:'field-block'},el('strong',{textContent:'Colours'}),el('div',{className:'legend card',style:'position:relative;box-shadow:none;padding:0'},
+      el('span',{className:'legend-bar',style:'left:0;right:0;background:'+dom.legendBar.style.background}))),
+    el('p',{className:'note',textContent:layer==='precip'?'One colour scale for observed radar, nowcast and forecast, so they can be compared directly.':'ICON-D2 '+LAYER_INFO[layer].label+', '+LAYER_INFO[layer].unit+'.'}));
+  openDialog((layer==='precip'?'Precipitation':LAYERS[layer]?.label||'Layer')+' colours',body,[
+    {label:'Reset',left:true,fn:()=>{state.opacity[key]=key==='rain'?.85:.8;range.value=String(Math.round(state.opacity[key]*100));out.textContent=range.value+' %';requestMap();return false;}},
+    {label:'Cancel',fn:()=>{state.opacity[key]=before;requestMap();}},{label:'Save',fn:()=>{save();}}]);
+}
+function openGraphMenu(index,x,y){
+  openMenu([['Compare','compare',openCompare],['Edit range','range',()=>openRange(index)],['Edit graph','edit',()=>openGraphEditor(index)],
+    ['Add','add',()=>openAddGraph(index)],['Delete','trash',()=>deleteGraph(index)],['Help','help',openHelp]],x,y);
+}
+function openGraphEditor(index){
+  const cfg=state.graphs[index];if(!cfg)return;
+  const preview=el('div',{className:'graph'});const canvas=el('canvas');preview.append(canvas);
+  const draw=()=>drawGraph(canvas,cfg,chartForecast(),timeView(),days(),graphInfo());
+  const list=el('div');
+  for(const [id,label] of GRAPH_TYPES[cfg.type].elements){
+    const cb=el('input',{type:'checkbox',checked:cfg.elements[id]});cb.setAttribute('aria-label',label);
+    cb.addEventListener('change',()=>{cfg.elements[id]=cb.checked;draw();save();requestGraphs();});
+    list.append(el('label',{className:'list-row'},el('span',{className:'label',textContent:label}),cb));
+  }
+  const body=el('div',{},el('div',{className:'meteo-preview'},preview),el('p',{className:'page-hint',textContent:'Choose what this graph shows.'}),list);
+  openPage('Edit graph',GRAPH_TYPES[cfg.type].label,body,{onClose:()=>renderMeteo()});
+  requestAnimationFrame(draw);
+}
+function openRange(index){
+  const cfg=state.graphs[index];if(!cfg)return;
+  const body=el('div'),inputs={};
+  const unitOf=k=>k==='wind'?(state.units.wind==='bft'?'km/h':state.units.wind):null;
+  const toUser=(k,v)=>k==='wind'&&state.units.wind!=='bft'?conv.wind(v):v;
+  const fromUser=(k,v)=>{if(k!=='wind'||state.units.wind==='bft')return v;return v/conv.wind(1);};
+  const defaults=GRAPH_TYPES[cfg.type].ranges;
+  for(const k of Object.keys(defaults)){
+    const cur=cfg.ranges[k],auto=cur===null,custom=el('input',{type:'checkbox',checked:!auto});
+    const lo=el('input',{type:'number',step:'any',value:auto?'':String(Math.round(toUser(k,cur[0])*10)/10)});
+    const hi=el('input',{type:'number',step:'any',value:auto?'':String(Math.round(toUser(k,cur[1])*10)/10)});
+    lo.disabled=hi.disabled=auto&&defaults[k]===null&&!custom.checked;
+    custom.addEventListener('change',()=>{lo.disabled=hi.disabled=!custom.checked;});
+    inputs[k]={custom,lo,hi};
+    const label=RANGE_LABELS[k]+(unitOf(k)?` (${unitOf(k)})`:'');
+    body.append(el('div',{className:'field-block'},el('label',{className:'list-row'},custom,el('span',{className:'label',textContent:label})),
+      el('div',{className:'field-inline'},lo,hi),el('div',{className:'note',textContent:defaults[k]?`Default: ${defaults[k].map(v=>Math.round(toUser(k,v))).join(' – ')}`:'Default: automatic'})));
+  }
+  openDialog('Edit range',body,[{label:'Cancel'},{label:'Save',fn:()=>{
+    for(const [k,{custom,lo,hi}] of Object.entries(inputs)){
+      if(!custom.checked){cfg.ranges[k]=defaults[k]?[...defaults[k]]:null;continue;}
+      const a=fromUser(k,Number(lo.value)),b=fromUser(k,Number(hi.value));
+      if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a){toast('Each range needs a minimum below its maximum',{error:true});return false;}
+      cfg.ranges[k]=[a,b];
+    }
+    save();drawGraphs();
+  }}]);
+}
+function openAddGraph(index){
+  const list=el('div');
+  for(const [type,t] of Object.entries(GRAPH_TYPES)){const b=el('button',{className:'model-row',textContent:t.label});
+    b.addEventListener('click',()=>{if(state.graphs.length>=5){toast('Up to five graphs');return;}state.graphs.splice(index+1,0,defaultGraph(type));save();closeDialog();renderMeteo();});list.append(b);}
+  openDialog('Add graph',list,[{label:'Cancel'}]);
+}
+function deleteGraph(index){
+  if(state.graphs.length<=1){toast('Keep at least one graph');return;}
+  state.graphs.splice(index,1);save();renderMeteo();
+}
+function openHelp(){
+  openDialog('How to use OpenWetter',el('div',{},...[
+    ['Swipe sideways on the map','change the time slowly (fine steps)'],['Swipe up or down','change the time quickly; up is later'],
+    ['Two fingers','move or zoom the map; the forecast follows the square in the middle'],['Tap a graph','jump to that time'],
+    ['Hold a graph','edit, add, remove or compare graphs'],['Tap the clock','back to now'],['Double-tap a day','compare all models'],
+    ['Layer bar','tap icons to switch map layers; ⊕ to choose and order them'],['Colour bar','tap to change opacity'],
+  ].map(([a,b])=>el('div',{className:'field-row'},el('strong',{textContent:a}),el('span',{className:'note',textContent:b})))),[{label:'Got it'}]);
+}
+function openSwipeSettings(){
+  const draft=structuredClone(state.swipe);
+  const axisBlock=(axis,label)=>{
+    const num=el('input',{type:'number',step:'any',min:'0.1',value:String(draft[axis].value)});
+    num.addEventListener('input',()=>{draft[axis].value=Number(num.value);});
+    const unit=select([{value:'range',label:'% range'},{value:'days',label:'days'},{value:'hours',label:'hours'}],draft[axis].unit,v=>{draft[axis].unit=v;});
+    return el('div',{className:'field-block'},el('strong',{textContent:label}),el('div',{className:'field-inline'},num,unit));
+  };
+  const stepping=select([{value:'smooth',label:'Smooth'},{value:'data',label:'Data steps'}],draft.stepping,v=>{draft.stepping=v;});
+  const body=el('div',{},axisBlock('horizontal','Horizontal swipe speed'),axisBlock('vertical','Vertical swipe speed'),
+    el('div',{className:'field-block'},el('strong',{textContent:'Time stepping'}),el('div',{className:'field-inline'},stepping)),
+    el('p',{className:'note',textContent:'Speed is the time covered by one swipe across the whole map width. Right and up move later.'}));
+  openDialog('Swipe settings',body,[{label:'Reset',left:true,fn:()=>{Object.assign(draft,structuredClone(DEFAULT_SWIPE));closeDialog();state.swipe=draft;save();openSwipeSettings();return false;}},
+    {label:'Cancel'},{label:'Save',fn:()=>{if(!validSwipeSetting(draft.horizontal)||!validSwipeSetting(draft.vertical)){toast('Enter a positive speed',{error:true});return false;}
+      state.swipe=draft;save();}}]);
+}
+function openSettings(){
+  closeDrawer();
+  const units=el('div');
+  for(const [k,opts] of Object.entries(UNIT_OPTIONS))units.append(fieldRow({temperature:'Temperature',precipitation:'Precipitation',wind:'Wind',pressure:'Pressure'}[k],
+    select(opts,state.units[k],v=>{state.units[k]=v;save();updateReadout();drawGraphs();updateChip();dom.legend.dataset.key='';updateLegend();})));
+  const swipe=el('button',{className:'drawer-item',innerHTML:icon('settings')+'<span>Swipe settings</span>'});swipe.addEventListener('click',openSwipeSettings);
+  const smooth=el('input',{type:'checkbox',checked:state.smoothFrames});smooth.addEventListener('change',()=>{state.smoothFrames=smooth.checked;save();});
+  openPage('Settings','',el('div',{},el('div',{className:'page-section',textContent:'Units'}),units,
+    el('div',{className:'page-section',textContent:'Controls'}),swipe,
+    el('div',{className:'page-section',textContent:'Map'}),fieldRow('Smooth frame transitions',smooth)));
+}
+let cacheJob=null;
+function openOffline(){
+  closeDrawer();
+  const progress=el('p',{className:'note',textContent:'Downloads the visible map area so you can scrub it without network. Maps you view are also kept automatically.'});
+  const mk=(kind,label)=>{const b=el('button',{className:'drawer-item',innerHTML:icon('download')+html`<span>${label}</span>`});
+    b.addEventListener('click',()=>void preloadCache(kind,progress));return b;};
+  openDialog('Offline maps',el('div',{},mk('radar','Observed radar, past 6 h'),mk('icon','ICON-D2 rain, next 48 h'),progress),[{label:'Close'}]);
+}
+function cacheJobs(kind){
+  const view=mapView(),urls=new Map();
+  const add=frame=>{if(frame)for(const t of visibleFrameTiles(frame,view))urls.set(t.url,frame.source==='icon'?'icon':'radar');};
+  if(kind==='icon')for(const c of iconLayerSpec('precip')?.chunks||[])add(iconFrame(state.icon,'precip',c.first));
+  else{const seen=new Set(),since=(state.radar?.latest??0)-6*3600;
+    for(const f of state.radar?.frames||[])if(f.time>=since&&!seen.has(f.chunkKey)){seen.add(f.chunkKey);add(radarFrame(state.radar,f));}
+    if(state.nowcast)add(nowcastFrame(state.nowcast,state.nowcast.frames[0].time));}
+  return [...urls];
+}
+async function preloadCache(kind,progress){
+  if(cacheJob){cacheJob.abort();return;}
+  const jobs=cacheJobs(kind);if(!jobs.length){progress.textContent='Nothing to download for this map view yet.';return;}
+  const stats=await weatherDiskCache.stats(kind);if(!stats.available){progress.textContent='Storage is unavailable here; maps still load on demand.';return;}
+  const controller=new AbortController();cacheJob=controller;let done=0,errors=0;
+  try{for(const [url,bucket] of jobs){if(controller.signal.aborted)break;try{await tileBlob(url,bucket);}catch{errors++;}done++;
+      progress.textContent=`${done}/${jobs.length} tiles${errors?` (${errors} failed)`:''}… tap again to stop`;}
+    const info=await weatherDiskCache.stats(kind);
+    progress.textContent=`${controller.signal.aborted?'Stopped':'Done'}: ${done-errors} tiles stored (${(info.bytes/1048576).toFixed(1)} MB on this device).`;
+  }finally{cacheJob=null;}
+}
+/* model comparison page */
+function openCompare(){
+  const f=state.point;
+  const body=el('div');
+  const models=f?POINT_MODELS.filter(m=>f.models[m]):[];
+  if(!models.length)body.append(el('p',{className:'note',textContent:state.pointError||'Loading forecast…'}));
+  const groups=[];
+  for(const m of models){
+    const mf={...f,series:{...f.models[m],previous_temperature_2m:f.series.previous_temperature_2m},transitions:[],source:f.time.map(()=>m)};
+    const block=el('div',{className:'compare-model'},el('h3',{textContent:'DWD '+MODEL_LABELS[m]+(m==='icon_d2'?' · 2 km':m==='icon_eu'?' · 7 km':' · 11 km')}));
+    const wrap=el('div',{className:'meteo-preview'});
+    for(const type of ['everyday','temperature']){const g=el('div',{className:'graph'}),c=el('canvas');g.append(c);wrap.append(g);groups.push([c,state.graphs.find(x=>x.type===type)||defaultGraph(type),mf]);}
+    const cursor=el('div',{className:'time-cursor selected'});wrap.append(cursor);groups.push([null,null,null,cursor,wrap]);
+    block.append(wrap);body.append(block);
+  }
+  body.append(el('p',{className:'page-hint',textContent:'Tap a graph to set the time. ICON-D2 ends after 48 hours and ICON-EU after 5 days.'}));
+  const draw=()=>{const v=timeView(),d=days(),info=graphInfo();
+    for(const [c,cfg,mf,cursor,wrap] of groups){
+      if(c)drawGraph(c,cfg,mf,v,d,info);
+      else{const w=wrap.getBoundingClientRect().width;cursor.style.top='0';cursor.style.height=wrap.getBoundingClientRect().height+'px';
+        cursor.style.left=((state.time-v.start)/(v.end-v.start)*w)+'px';}
+    }};
+  body.addEventListener('click',e=>{const g=e.target.closest('.graph');if(!g)return;const r=g.getBoundingClientRect(),v=timeView();
+    setTime(v.start+clamp((e.clientX-r.left)/r.width,0,1)*(v.end-v.start));draw();});
+  openPage('Compare models',state.place.name,body);
+  requestAnimationFrame(draw);
+}
+
+/* ---------- wiring ---------- */
 function wire(){
-  dom.viewForecast.addEventListener('click',()=>setView('forecast'));
-  dom.viewCompare.addEventListener('click',()=>setView('compare'));
-  dom.modelSelect.addEventListener('change',event=>selectModel(event.target.value));
-  dom.horizonPast.addEventListener('click',()=>setPastModel(!state.pastModel));
-  dom.horizon48.addEventListener('click',()=>setHorizon(48));
-  dom.horizon120.addEventListener('click',()=>setHorizon(120));
-  for(const h of RADAR_WINDOWS)dom['radarHours'+h].addEventListener('click',()=>setRadarHours(h));
-  dom.timeSlider.addEventListener('input',event=>{stopPlay();
-    if(state.mode==='continuous')setContinuousIndex(Number(event.target.value));
-    else if(state.mode==='radar')setRadarIndex(Number(event.target.value));
-    else setSelectedTime(timeBounds().min+Number(event.target.value)*timelineStep());
-  });
-  dom.playBtn.addEventListener('click',play);
-  dom.modeContinuous.addEventListener('click',()=>setMode('continuous'));
-  dom.modeForecast.addEventListener('click',()=>setMode('forecast'));
-  dom.modeRadar.addEventListener('click',()=>setMode('radar'));
-  dom.toggleRain.addEventListener('click',()=>toggleObservation('rain'));
-  dom.toggleClouds.addEventListener('click',()=>toggleObservation('clouds'));
-  dom.layersBtn.addEventListener('click',()=>toggleLayerPanel());
-  dom.closeLayers.addEventListener('click',()=>toggleLayerPanel(false));
-  dom.toggleWarnings.addEventListener('change',event=>{state.showWarnings=event.target.checked;warningsDrawKey='';save();updateOverlayUI();requestMap();});
-  for(const node of [dom.layerPanel,dom.mapLegend])node.addEventListener('pointerdown',event=>event.stopPropagation());
-  dom.zoomIn.addEventListener('click',()=>zoom(1));dom.zoomOut.addEventListener('click',()=>zoom(-1));
-  dom.resetView.addEventListener('click',()=>{state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;requestMap();});
-  dom.cacheRadarBtn.addEventListener('click',()=>{void preloadWeatherCache('radar');});
-  dom.cacheForecastBtn.addEventListener('click',()=>{void preloadWeatherCache('icon');});
-  dom.settingsBtn.addEventListener('click',()=>{
-    dom.settingsPanel.hidden=!dom.settingsPanel.hidden;
-    dom.settingsBtn.setAttribute('aria-expanded',String(!dom.settingsPanel.hidden));
-  });
-  dom.horizontalSpeed.addEventListener('input',event=>{
-    state.horizontalHours=Number(event.target.value);dom.horizontalOutput.textContent=`${state.horizontalHours} h / 100 px`;save();
-  });
-  dom.verticalSpeed.addEventListener('input',event=>{
-    state.verticalHours=Number(event.target.value);dom.verticalOutput.textContent=`${state.verticalHours} h / 100 px`;save();
-  });
-  dom.cloudOpacitySlider.addEventListener('input',event=>{
-    state.cloudOpacity=Number(event.target.value)/100;dom.cloudTiles.style.opacity=String(state.cloudOpacity);
-    dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;save();
-  });
-  dom.smoothFrames.addEventListener('change',event=>{
-    state.smoothFrames=event.target.checked;
-    if(!state.smoothFrames){crossfades.forecast.stop({forget:false});crossfades.radar.stop({forget:false});}
-    save();
-  });
-  dom.opacitySlider.addEventListener('input',event=>{
-    state.radarOpacity=Number(event.target.value)/100;
-    crossfades.radar.updateOpacity();
-    dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;save();
-  });
-  dom.graphStack.addEventListener('pointerdown',event=>{
-    const body=event.target.closest('.plot-body');if(!body)return;
-    body.setPointerCapture(event.pointerId);
-    timeFromGraphPointer(event,body);
-  });
-  dom.graphStack.addEventListener('pointermove',event=>{
-    const body=event.target.closest('.plot-body');
-    if(body&&(event.buttons||event.pressure>0))timeFromGraphPointer(event,body);
-  });
-  dom.searchForm.addEventListener('submit',async event=>{
-    event.preventDefault();const query=dom.citySearch.value.trim();if(!query)return;
-    showMessage('Searching for location…');
-    try{
-      const response=await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`,null,12000);
-      const p=response.results?.[0];if(!p)throw new Error('No matching place');
-      const name=[p.name,p.admin1,p.country].filter((x,i,a)=>x&&a.indexOf(x)===i).join(', ');
-      setPlace({name,latitude:p.latitude,longitude:p.longitude});
-    }catch(error){showMessage(`Location search: ${error.message}`,true);}
-  });
+  dom.placeBtn.addEventListener('click',()=>dom.drawer.hidden?openDrawer():closeDrawer());
+  dom.scrim.addEventListener('click',()=>{closeDrawer();closeMenu();});
+  dom.infoBtn.addEventListener('click',openInfo);
+  dom.moreBtn.addEventListener('click',openMore);
+  dom.clockBtn.addEventListener('click',()=>{cancelAnimationFrame(momentumFrame);setTime(Date.now()/1000);});
+  dom.sourceBtn.addEventListener('click',openSource);
+  dom.editLayersBtn.addEventListener('click',openLayerEditor);
+  dom.layerButtons.addEventListener('click',e=>{const b=e.target.closest('button[data-layer]');if(b)toggleLayer(b.dataset.layer);});
+  dom.legend.addEventListener('click',openSpectrum);
+  dom.settingsBtn.addEventListener('click',openSettings);
+  dom.offlineBtn.addEventListener('click',openOffline);
+  dom.helpBtn.addEventListener('click',()=>{closeDrawer();openHelp();});
+  dom.dialogLayer.addEventListener('click',e=>{if(e.target===dom.dialogLayer)closeDialog();});
+  dom.addPlaceBtn.addEventListener('click',()=>{
+    let p={...state.place};
+    if(p.name==='Panned location'||p.name==='My location')p.name=`${p.name==='My location'?'My location':'Place'} ${p.latitude.toFixed(2)}, ${p.longitude.toFixed(2)}`;
+    state.favorites.push(p);state.favorites=state.favorites.slice(-30);save();renderPlaces();});
   dom.locateBtn.addEventListener('click',()=>{
-    if(!navigator.geolocation){showMessage('Location services not available.',true);return;}
-    showMessage('Requesting location permission…');
-    navigator.geolocation.getCurrentPosition(p=>setPlace({name:'My location',latitude:p.coords.latitude,longitude:p.coords.longitude}),
-      e=>showMessage(`Location error: ${e.message}`,true),{timeout:12000,maximumAge:60000});
+    if(!navigator.geolocation){toast('Location is not available',{error:true});return;}
+    navigator.geolocation.getCurrentPosition(p=>{setPlace({name:'My location',latitude:p.coords.latitude,longitude:p.coords.longitude});closeDrawer();},
+      e=>toast('Location: '+e.message,{error:true}),{timeout:12000,maximumAge:60000});
   });
-  dom.placesBtn.addEventListener('click',()=>dom.placesDrawer.hidden?openDrawer():closeDrawer());
-  dom.closePlaces.addEventListener('click',closeDrawer);dom.drawerScrim.addEventListener('click',closeDrawer);
-  dom.savePlace.addEventListener('click',()=>{
-    if(state.favorites.some(p=>placeKey(p)===placeKey(state.place)))return;
-    state.favorites.push({...state.place});state.favorites=state.favorites.slice(-20);save();renderPlaces();
+  dom.searchForm.addEventListener('submit',async e=>{
+    e.preventDefault();const q=dom.searchInput.value.trim();if(!q)return;
+    try{const r=await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=en&format=json`);
+      const j=await r.json(),p=j.results?.[0];if(!p)throw new Error('no matching place');
+      setPlace({name:[p.name,p.admin1,p.country].filter((x,i,a)=>x&&a.indexOf(x)===i).join(', '),latitude:p.latitude,longitude:p.longitude});
+      dom.searchInput.value='';closeDrawer();
+    }catch(error){toast('Search: '+error.message,{error:true});}
   });
-  window.addEventListener('keydown',event=>{
-    if(event.key==='Escape'){closeDrawer();toggleLayerPanel(false);dom.settingsPanel.hidden=true;dom.settingsBtn.setAttribute('aria-expanded','false');}
-    if(event.target.matches('input,button,select,textarea'))return;
-    if(event.key==='ArrowRight'){stopPlay();state.mode==='continuous'?setContinuousIndex(continuousCursorIndex(combinedFrames(),state.continuousCursor)+1):state.mode==='radar'?setRadarIndex(state.radarIndex+1):setSelectedTime(state.selectedTime+timelineStep());}
-    if(event.key==='ArrowLeft'){stopPlay();state.mode==='continuous'?setContinuousIndex(continuousCursorIndex(combinedFrames(),state.continuousCursor)-1):state.mode==='radar'?setRadarIndex(state.radarIndex-1):setSelectedTime(state.selectedTime-timelineStep());}
+  window.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){closeDrawer();closeMenu();closeDialog();}
+    if(e.target.matches('input,select,textarea')||!dom.page.hidden)return;
+    const step={ArrowRight:3600,ArrowLeft:-3600,ArrowUp:900,ArrowDown:-900}[e.key];
+    if(step){e.preventDefault();setTime(state.time+step);}
   });
   window.addEventListener('resize',()=>{requestGraphs();requestMap();});
-  if('ResizeObserver' in window)new ResizeObserver(()=>{requestGraphs();requestMap();}).observe(dom.graphStack);
-  document.addEventListener('visibilitychange',()=>{if(document.hidden)stopPlay();else refreshPointers();});
-  wireMapGestures();
+  if('ResizeObserver' in window)new ResizeObserver(()=>{requestGraphs();requestMap();}).observe(dom.map);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){void loadIconRun();updateCursor();}});
+  wireMapGestures();wireGraphGestures();wireDays();
 }
-/** Test/debug helper: decoded value of the displayed layer at a point. */
-async function sampleAt(latitude,longitude){
-  const d=currentDisplay(),frame=d.iconFrame||d.radarFrame;
-  if(!frame)return null;
-  const view={latitude,longitude,zoom:12,width:8,height:8,ratio:1};
-  await renderer.load(frame,view);
-  const code=renderer.sampleAt(frame,latitude,longitude);
-  return {code,value:decodeCode(frame.layer,code),layer:frame.layer,time:frame.time,run:frame.run??null,renderer:renderer.kind};
-}
-async function selfCheckVisible(){
-  const d=currentDisplay(),frame=d.iconFrame||d.radarFrame;if(!frame)return null;
-  const tile=visibleFrameTiles(frame,mapView())[0];if(!tile)return null;
-  return renderer.selfCheck(await tileBlob(tile.url,frame.source==='icon'?'icon':'radar'),frame.frames,frame.index);
-}
+
+/* ---------- start ---------- */
 loadPreferences();
-wire();
-dom.citySearch.value=state.place.name;
-dom.horizontalSpeed.value=String(state.horizontalHours);
-dom.verticalSpeed.value=String(state.verticalHours);
-dom.horizontalOutput.textContent=`${state.horizontalHours} h / 100 px`;
-dom.verticalOutput.textContent=`${state.verticalHours} h / 100 px`;
-dom.opacitySlider.value=String(Math.round(state.radarOpacity*100));
-dom.opacityOutput.textContent=`${Math.round(state.radarOpacity*100)}%`;
-dom.radarCanvas.style.opacity=String(state.radarOpacity);
-dom.smoothFrames.checked=state.smoothFrames;
-dom.cloudOpacitySlider.value=String(Math.round(state.cloudOpacity*100));
-dom.cloudOpacityOutput.textContent=`${Math.round(state.cloudOpacity*100)}%`;
-dom.cloudTiles.style.opacity=String(state.cloudOpacity);
-buildLayerMenu();updateOverlayUI();updateCacheControls();
-refreshView();loadModelsForView();void loadIconRun();
-if(state.model==='icon_eu')void loadEuWms();
-void weatherDiskCache.dropOtherNamespaces();
-setInterval(refreshPointers,120_000);
-if('serviceWorker' in navigator&&!params.has('no-sw')&&(location.protocol==='https:'||location.hostname==='localhost')){
-  window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+{
+  const lat=Number(params.get('lat')),lon=Number(params.get('lon'));
+  if(params.has('lat')&&params.has('lon')&&Number.isFinite(lat)&&Number.isFinite(lon)&&Math.abs(lat)<=85&&Math.abs(lon)<=180){
+    state.place={name:params.get('name')||'Shared place',latitude:lat,longitude:lon};state.map.latitude=lat;state.map.longitude=lon;}
 }
-// Unit and browser tests can inspect the state with ?test=1; no production dependency.
-if(params.has('test'))window.openwetterTest={state,setSelectedTime,setHorizon,setMode,setView,setPlace,
-  selectModel,renderMap,drawGraphs,updateCursor,chartBounds,chartTime,combinedFrames,setContinuousIndex,pickGestureAxis,
-  toggleObservation,selectMapLayer,applyGridForecast,currentDisplay,timeBounds,renderer,sampleAt,selfCheckVisible,
-  setRadarIndex,setRadarHours};
+wire();updateHeader();renderLayerBar();renderMeteo();updateReadout();
+void loadPoint();void loadIconRun();
+void weatherDiskCache.dropOtherNamespaces();
+setInterval(()=>{if(!document.hidden)void loadIconRun();},120_000);
+setInterval(()=>{updateCursor();updateDays();},60_000);
+if('serviceWorker' in navigator&&!params.has('no-sw')&&(location.protocol==='https:'||location.hostname==='localhost'))
+  window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+if(params.has('test'))window.openwetterTest={state,setTime,setPlace,toggleLayer,timeBounds,timeView,rainSource,rainFrameAt,
+  renderMap,drawGraphs,renderer,chartForecast,openCompare,openGraphMenu,openLayerEditor,
+  sample:async(lat,lon)=>{const f=state.field?iconFrameAt(state.field,state.time):rainFrameAt(state.time).frame;if(!f)return null;await renderer.load(f,{latitude:lat,longitude:lon,zoom:12,width:8,height:8,ratio:1});
+    const code=renderer.sampleAt(f,lat,lon);return {code,value:decodeCode(f.layer,code),layer:f.layer,time:f.time,source:f.source,index:f.index};}};

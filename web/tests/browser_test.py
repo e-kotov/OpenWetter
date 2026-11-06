@@ -1,6 +1,9 @@
-"""Mocked Chromium UI tests: touch scrubbing, stacked charts, model comparison,
-places, the WebGL tile renderer, radar/nowcast/forecast sequencing, layer menu,
-warnings and graceful handling of missing tile-service endpoints.
+"""Mocked Chromium UI tests for the Flowx-style interface: layout, one-finger
+time scrubbing (slop, per-move dominant axis, momentum, clamping), two-finger
+map pan/pinch with the forecast following the map centre, graph taps and the
+long-press graph menu, the layer bar, observed radar -> nowcast -> ICON-D2
+rain, exact decoding through the WebGL renderer, settings, comparison page and
+graceful handling of missing endpoints.
 
 The app is served from a routed fake HTTPS origin (no network). Every external
 response is synthetic: tile-service JSON is generated in the page for the
@@ -18,7 +21,7 @@ import zlib
 from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-CAPTURES = ROOT.parent / 'screenshots'
+CAPTURES = pathlib.Path(os.environ.get('OPENWETTER_CAPTURES') or ROOT.parent / 'screenshots')
 CAPTURES.mkdir(exist_ok=True)
 ORIGIN = 'https://openwetter.test/'
 APP_URL = ORIGIN + 'index.html?test=1&no-sw'
@@ -44,7 +47,7 @@ CLOUD = solid_png((235, 240, 250, 90))
 MOCK = r'''(() => {
   const F = __FIXTURE_JSON__;
   const bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  const counters = {forecast:{}, geocode:0, wmsMetadata:0, wmsTiles:0, urls:{}};
+  const counters = {forecast:{}, geocode:0, wmsMetadata:0, wmsTiles:0, urls:{}, point:0, previous:0};
   window.__mockCounts = () => JSON.parse(JSON.stringify(counters));
   const now = Math.floor(Date.now()/1000), anchor = Math.floor(now/3600)*3600;
   const runTime = Math.floor(now/10800)*10800 - 10800;
@@ -90,17 +93,30 @@ MOCK = r'''(() => {
     body.fill(60, 240*n);                 // 60 %
     return new Response(new Blob([body]).stream().pipeThrough(new CompressionStream('gzip')));
   };
+  // Open-Meteo multi-model point forecast (suffix per model): ICON-D2 to +48 h,
+  // ICON-EU to +120 h, ICON Global to the end; from yesterday 00:00.
   const forecast = url => {
-    const model = new URL(url).searchParams.get('models');
-    const count = model==='icon_d2'?48:120, past = Number(new URL(url).searchParams.get('past_hours')||0);
-    const n = Array.from({length:count+past}, (_,i) => i-past), offset = {icon_d2:0, icon_eu:4, icon_global:-2}[model];
-    return {latitude:51.51, longitude:7.46, timezone:'Europe/Berlin', hourly:{
-      time:n.map(i => anchor+3600*i),
-      temperature_2m:n.map(i => Math.round((12+offset+6*Math.sin(i/6))*10)/10),
-      precipitation:n.map(i => Math.round(Math.max(0,2*Math.sin((i+offset)/4))*10)/10),
-      wind_speed_10m:n.map(i => Math.round(12+4*Math.cos(i/7))),
-      wind_direction_10m:n.map(() => 180), cloud_cover:n.map(i => Math.round(55+40*Math.sin(i/5))),
-      relative_humidity_2m:n.map(() => 70), pressure_msl:n.map(() => 1013)}};
+    const q = new URL(url).searchParams, vars = q.get('hourly').split(','), models = q.get('models').split(',');
+    const start = anchor - 48*3600, n = 48 + 7*24, hourly = {time: Array.from({length:n}, (_,i) => start+3600*i)};
+    const end = {icon_d2: anchor+48*3600, icon_eu: anchor+120*3600, icon_global: Infinity};
+    const offset = {icon_d2:0, icon_eu:4, icon_global:-2};
+    const value = (v, i, m) => { const k = i - 48;
+      if (v === 'temperature_2m') return Math.round((8+offset[m]+5*Math.sin(k/6))*10)/10;
+      if (v === 'dew_point_2m') return 3;
+      if (v === 'precipitation') return Math.round(Math.max(0,2*Math.sin((k+offset[m])/4))*10)/10;
+      if (v === 'wind_speed_10m') return Math.round(14+6*Math.cos(k/7));
+      if (v === 'wind_gusts_10m') return 30;
+      if (v === 'wind_direction_10m') return 225;
+      if (v === 'pressure_msl') return 1013;
+      if (v.startsWith('cloud_cover')) return Math.round(50+45*Math.sin(k/5));
+      return 50; };
+    for (const m of models) for (const v of vars)
+      hourly[v+'_'+m] = hourly.time.map((t,i) => t < end[m] ? value(v,i,m) : null);
+    return {latitude:51.51, longitude:7.46, timezone:'Europe/Berlin', hourly};
+  };
+  const previousRun = url => {
+    const start = anchor - 48*3600, n = 48 + 7*24, time = Array.from({length:n}, (_,i) => start+3600*i);
+    return {timezone:'Europe/Berlin', hourly:{time, temperature_2m:time.map(() => 7), temperature_2m_previous_day1:time.map(() => 7)}};
   };
   window.__mockInfo = {now, anchor, runTime, run, latest, c0, issued};
   window.__radarWaiters = [];
@@ -139,10 +155,10 @@ MOCK = r'''(() => {
       }
       return new Response('not found', {status:404});
     }
+    if (url.includes('previous-runs-api.open-meteo.com')) { counters.previous = (counters.previous||0) + 1; return json(previousRun(url)); }
     if (url.includes('/v1/dwd-icon')) {
-      const model = new URL(url).searchParams.get('models');
-      counters.forecast[model] = (counters.forecast[model]||0) + 1;
-      if (window.__mockD2OfflinePoint && model==='icon_d2') throw new DOMException('signal is aborted without reason', 'AbortError');
+      counters.point = (counters.point||0) + 1; counters.lastPoint = url;
+      if (window.__mockPointDown) return new Response('down', {status:503});
       return json(forecast(url));
     }
     if (url.includes('geocoding-api.open-meteo.com')) {
@@ -193,407 +209,249 @@ def new_page(browser, viewport, mobile=False, flags=None):
     return page, errors
 
 
-def input_range(page, selector, value):
-    page.locator(selector).evaluate('(input,value)=>{input.value=String(value);input.dispatchEvent(new Event("input",{bubbles:true}));}', value)
+def cdp_touch(page, frames, step_ms=16):
+    """frames: list of [(x, y), ...] per step; same finger count throughout."""
+    c = page.context.new_cdp_session(page)
+    tp = lambda fr: [{'x': x, 'y': y, 'id': i + 1} for i, (x, y) in enumerate(fr)]
+    c.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': tp(frames[0])})
+    for fr in frames[1:]:
+        page.wait_for_timeout(step_ms)
+        c.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': tp(fr)})
+    c.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
 
 
-def touch_drag(page, dx, dy):
-    b = page.locator('#map').bounding_box()
-    x = b['x'] + b['width'] * .43; y = b['y'] + b['height'] * .56
+def path(start, end, n):
+    return [[(sx + (ex - sx) * k / n, sy + (ey - sy) * k / n) for (sx, sy), (ex, ey) in zip(start, end)] for k in range(n + 1)]
+
+
+def tap(page, x, y, hold=0):
     c = page.context.new_cdp_session(page)
     c.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
-    c.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x + dx / 2, 'y': y + dy / 2, 'id': 1}]})
-    c.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x + dx, 'y': y + dy, 'id': 1}]})
+    if hold:
+        page.wait_for_timeout(hold)
     c.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
-    page.wait_for_timeout(50)
+    page.wait_for_timeout(150)
 
 
-def two_finger_pan_and_pinch(page):
-    b = page.locator('#map').bounding_box()
-    x = b['x'] + b['width'] * .5; y = b['y'] + b['height'] * .65
-    c = page.context.new_cdp_session(page)
-    start = [{'x': x - 22, 'y': y, 'id': 1}, {'x': x + 22, 'y': y, 'id': 2}]
-    end = [{'x': x - 68, 'y': y + 18, 'id': 1}, {'x': x + 68, 'y': y + 18, 'id': 2}]
-    c.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': start})
-    c.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': end})
-    c.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
-    page.wait_for_timeout(60)
+def expected_code(lat, lon, index):
+    """Fixture formula: code at column c, row r of frame f = (2c + 3r + 5f) % 250 + 1 (ICON grid 4E/56N, 0.25 x 0.2 deg)."""
+    col, row = round((lon - 4) / .25), round((56 - lat) / .2)
+    return (2 * col + 3 * row + 5 * index) % 250 + 1
 
 
-EXPECTED_CODE = '(c,r,f)=>(c*2+r*3+f*5)%250+1'
+def mid_time(page):
+    page.evaluate('(()=>{const b=openwetterTest.timeBounds();openwetterTest.setTime((b.min+b.max)/2)})()')
 
 
-def check_exact_codes(page, latitude, longitude, grid):
-    """Decoded value at a point through the WebGL path equals the fixture formula."""
-    result = page.evaluate('''async([lat,lon,g,formula])=>{
-      const code=eval(formula),o=openwetterTest,d=o.currentDisplay(),frame=d.iconFrame||d.radarFrame;
-      const sample=await o.sampleAt(lat,lon);
-      const col=Math.round((lon-g.west)/g.lon),row=Math.round((g.north-lat)/g.lat);
-      return {sample,expected:code(col,row,frame.index),index:frame.index};
-    }''', [latitude, longitude, grid, EXPECTED_CODE])
-    assert result['sample']['code'] == result['expected'], result
-    return result
+def minutes_for_drag(page, dx, dy, x=150, y=600, steps=25, hold=200):
+    a = page.evaluate('openwetterTest.state.time')
+    frames = path([(x, y)], [(x + dx, y + dy)], steps) + [[(x + dx, y + dy)]] * (hold // 16)
+    cdp_touch(page, frames)
+    page.wait_for_timeout(250)
+    return (page.evaluate('openwetterTest.state.time') - a) / 60
 
 
-def ui(kind, viewport, browser):
-    page, errors = new_page(browser, viewport, mobile=kind == 'mobile')
-    page.wait_for_function('window.openwetterTest?.state.forecast?.hourly?.time?.length===48&&openwetterTest.state.icon')
-    state = lambda expr: page.evaluate('window.openwetterTest.state.' + expr)
-    assert page.locator('#locationName').inner_text() == 'Dortmund, Germany'
-    assert page.locator('#graphStack .plot-row').count() == 4
-    assert page.locator('#graphStack .plot-cursor').count() == 4
-    assert state('model') == 'icon_d2'
-    assert '°' in page.locator('#heroTemp').inner_text()
-    assert page.evaluate('window.__mockCounts().forecast.icon_d2') == 1
+def back(page):
+    page.locator('.page-bar .round-button').click()
+
+
+def ui_mobile(browser):
+    page, errors = new_page(browser, {'width': 412, 'height': 915}, mobile=True)
+    page.wait_for_function('window.openwetterTest?.state.point&&openwetterTest.state.icon&&openwetterTest.state.radar&&openwetterTest.state.nowcast')
+    page.wait_for_timeout(400)
+    st = lambda expr: page.evaluate('openwetterTest.state.' + expr)
     assert page.evaluate('openwetterTest.renderer.kind') in ('webgl2', 'webgl'), 'WebGL renderer unavailable'
-    if kind == 'mobile':
-        geometry = page.evaluate('''()=>{
-          const row=document.querySelector('.header-line');
-          return {width:innerWidth,rects:[...row.children].map(x=>{const r=x.getBoundingClientRect();return {left:r.left,right:r.right};})};
-        }''')
-        bounds = geometry['rects']
-        assert all(0 <= v['left'] and v['right'] <= geometry['width'] + 1 for v in bounds), geometry
-        assert all(bounds[i]['right'] <= bounds[i + 1]['left'] + 2 for i in range(len(bounds) - 1)), geometry
-        for width in [320, 360, 390]:
-            page.set_viewport_size({'width': width, 'height': 844})
-            m = page.evaluate('''()=>[...document.querySelector('.header-line').children].map(x=>({left:x.getBoundingClientRect().left,right:x.getBoundingClientRect().right}))''')
-            assert all(0 <= v['left'] and v['right'] <= width + 1 for v in m), (width, m)
-            assert all(m[i]['right'] <= m[i + 1]['left'] + 2 for i in range(len(m) - 1)), (width, m)
-    assert not errors, errors
 
-    # The layer menu lists the radar, the nowcast and all 13 ICON-D2 layers.
-    page.locator('#layersBtn').click()
-    assert page.locator('#layerPanel').is_visible()
-    values = page.locator('#layerList input[name="mapLayer"]').evaluate_all('els=>els.map(e=>e.value)')
-    assert values[:3] == ['timeline', 'radar', 'nowcast'], values
-    assert len(values) == 16, values
-    assert page.locator('#layerList input[value="precip"]').is_checked()
-    page.locator('#layerList input[value="temperature"]').check()
-    page.locator('#closeLayers').click()
-    assert state('iconLayer') == 'temperature'
-    assert 'ICON-D2 temperature' in page.locator('#mapLayerName').inner_text()
-    assert '°C' in page.locator('#mapLegend').inner_text()
-    assert 'hourly' in page.locator('#timeRange').inner_text()
+    # Layout measured from Flowx (412 x 915): 56 / 28 / 64+2+64 / 28 / 28 / map.
+    boxes = page.evaluate('''()=>{const b=s=>{const r=document.querySelector(s).getBoundingClientRect();return [Math.round(r.y),Math.round(r.height)];};
+      return {bar:b('.appbar'),ext:b('#extremes'),days:b('#days'),read:b('#readout'),map:b('#map'),chip:b('#mapChip'),
+        layers:b('#layerBar'),legend:b('#legend'),graphs:[...document.querySelectorAll('.graph')].map(g=>{const r=g.getBoundingClientRect();return [Math.round(r.y),Math.round(r.height)];})};}''')
+    assert boxes['bar'] == [0, 56] and boxes['ext'] == [56, 28], boxes
+    assert boxes['graphs'] == [[84, 64], [150, 64]], boxes
+    assert boxes['days'] == [214, 28] and boxes['read'] == [242, 28] and boxes['map'][0] == 270, boxes
+    assert boxes['chip'] == [278, 36] and boxes['layers'] == [819, 44] and boxes['legend'] == [871, 36], boxes
+    assert page.locator('#extremes span').count() == 14
+    assert page.locator('#days button').count() == 7 and page.locator('#days button.active').count() == 1
+    assert page.locator('#layerButtons button').count() == 7
+    assert page.inner_text('#placeName') == 'Dortmund'
+    counts = page.evaluate('window.__mockCounts()')
+    assert counts['point'] == 1 and counts['previous'] == 1, counts
+    assert page.evaluate('openwetterTest.state.point.transitions.map(t=>t.from+">"+t.to).join()') == 'icon_d2>icon_eu,icon_eu>icon_global'
 
-    # Time indicator moves; the four plotted graphs do not scroll (hourly layer: one slider step = 1 h).
-    bounds = page.evaluate('openwetterTest.timeBounds()')
-    assert bounds['min'] == state('anchor')
-    input_range(page, '#timeSlider', 20)
-    assert (state('selectedTime') - state('anchor')) / 3600 == 20
-    expected = 20 * 3600 / (bounds['max'] - bounds['min']) * 100
-    page.wait_for_function(f'Math.abs(parseFloat(document.querySelector(".plot-cursor").style.left)-{expected})<0.05')
-    positions = page.locator('.plot-cursor').evaluate_all('(els)=>els.map(e=>e.style.left)')
-    assert len(set(positions)) == 1, positions
-    # Exact codes through decode -> texture -> per-fragment Mercator->lat/lon -> readback.
-    page.wait_for_function('document.querySelector("#iconCanvas").dataset.weatherFrame?.startsWith("icon:")')
-    grid = {'west': 4, 'north': 56, 'lon': .25, 'lat': .2}
-    check_exact_codes(page, 51.5142, 7.4653, grid)
-    check_exact_codes(page, 48.137, 11.575, grid)
-    check = page.evaluate('openwetterTest.selfCheckVisible()')
-    assert check['ok'] and check['mismatches'] == 0 and check['checked'] == 40 * 45, check
-    # Past days: the map of earlier runs. The history index loads only when asked for.
-    history_urls = 'Object.keys(window.__mockCounts().urls).filter(u=>u.includes("/history/"))'
-    assert page.evaluate(history_urls) == []
-    page.click('#horizonPast')
-    page.wait_for_function('openwetterTest.state.history?.slices?.length===3')
-    assert state('pastModel') is True
-    assert page.locator('#horizonPast').get_attribute('aria-pressed') == 'true'
-    step = 900 if state('iconLayer') in ('precip', 'snow') else 3600
-    past = page.evaluate('openwetterTest.timeBounds()')
-    assert past['max'] == state('anchor'), past
-    assert past['min'] == state('icon.runTime') - 3 * 10800 + step, (past, 'earliest slice start')
-    assert page.evaluate('openwetterTest.chartBounds().min') == state('anchor'), 'charts keep the forecast window'
-    page.evaluate('openwetterTest.setSelectedTime(openwetterTest.state.icon.runTime-4*3600)')
-    page.wait_for_function('document.querySelector("#iconCanvas").dataset.weatherFrame?.startsWith("icon-history:")')
-    check_exact_codes(page, 51.5142, 7.4653, grid)
-    assert page.locator('#mapLayerName').inner_text().startswith('PAST'), page.locator('#mapLayerName').inner_text()
-    assert page.locator('.plot-cursor').first.evaluate('e=>e.style.visibility') == 'hidden'
-    page.click('#horizon48')
-    assert state('pastModel') is False and state('selectedTime') == state('anchor')
-    page.wait_for_function('document.querySelector("#iconCanvas").dataset.weatherFrame?.startsWith("icon:")')
-    input_range(page, '#timeSlider', 0)
-    if kind == 'mobile':
-        touch_drag(page, 100, 0)
-        slow = (state('selectedTime') - state('anchor')) / 3600
-        assert 3 <= slow <= 5, f'Horizontal scrub expected ≈4h, got {slow}'
-        input_range(page, '#timeSlider', 0)
-        touch_drag(page, 0, -100)
-        fast = (state('selectedTime') - state('anchor')) / 3600
-        assert 22 <= fast <= 26, f'Vertical scrub expected ≈24h, got {fast}'
-        input_range(page, '#timeSlider', 0)
-        old_zoom = state('map.zoom')
-        two_finger_pan_and_pinch(page)
-        assert state('map.zoom') > old_zoom, 'Two-finger pinch did not zoom the map'
-    else:
-        start = state('map.longitude')
-        b = page.locator('#map').bounding_box()
-        x = b['x'] + b['width'] * .45; y = b['y'] + b['height'] * .57
-        page.mouse.move(x, y); page.mouse.down(); page.mouse.move(x + 120, y + 18, steps=4); page.mouse.up()
-        assert abs(state('map.longitude') - start) > .01
-
-    # Clicking a fixed graph selects its absolute forecast time without scrolling it.
-    row = page.locator('#graphStack .plot-body').first
-    rect = row.bounding_box()
-    page.mouse.click(rect['x'] + rect['width'] * .6, rect['y'] + rect['height'] * .5)
-    target = bounds['min'] + .6 * (bounds['max'] - bounds['min'])
-    assert abs(state('selectedTime') - target) <= 3600
-    input_range(page, '#timeSlider', 0)
-
-    # Independent sensitivity sliders persist and affect gestures immediately.
-    page.locator('#settingsBtn').click()
-    assert page.locator('#settingsPanel').is_visible()
-    input_range(page, '#horizontalSpeed', 10)
-    input_range(page, '#verticalSpeed', 48)
-    assert state('horizontalHours') == 10 and state('verticalHours') == 48
-    assert '"horizontalHours":10' in page.evaluate('localStorage.getItem("openwetter.settings.v2")')
-    page.locator('#settingsBtn').click()
-    if kind == 'mobile':
-        touch_drag(page, 100, 0)
-        assert 9 <= (state('selectedTime') - state('anchor')) / 3600 <= 11
-        input_range(page, '#timeSlider', 0)
-        touch_drag(page, 0, -100)
-        assert state('selectedTime') == page.evaluate('openwetterTest.timeBounds().max')
-        input_range(page, '#timeSlider', 0)
-
-    # Compare models: same timestamp + same cursor across three different forecasts.
-    page.locator('#viewCompare').click()
-    page.wait_for_function('Object.keys(openwetterTest.state.forecasts).length===3')
-    assert page.locator('.compare-row').count() == 3
-    assert page.locator('#map').is_hidden()
-    for model in ['icon_eu', 'icon_global']:
-        assert state(f'forecasts.{model}.hourly.time.length') == 120
-    input_range(page, '#timeSlider', 10)
-    compare_times = page.locator('.plot-cursor').evaluate_all('(els)=>els.map(e=>e.style.left)')
-    assert len(set(compare_times)) == 1, compare_times
-    assert state('selectedTime') == state('anchor') + 36000
-    assert state('forecasts.icon_eu.hourly.temperature_2m[0]') != state('forecasts.icon_d2.hourly.temperature_2m[0]')
-    page.screenshot(path=str(CAPTURES / f'{kind}_compare.png'), full_page=True)
-
-    page.locator('#horizon120').click()
-    page.locator('#modelSelect').select_option('icon_eu')
-    input_range(page, '#timeSlider', 100)
-    assert state('selectedTime') == state('anchor') + 100 * 3600
-    vals = page.locator('.compare-values').all_inner_texts()
-    assert vals[0].startswith('—'), vals
-    assert not vals[1].startswith('—'), vals
-    page.locator('#modelSelect').select_option('icon_d2')
-
-    # Drawer: switch an actual saved city, and search for a new city.
-    page.locator('#placesBtn').click()
-    assert page.locator('#placesDrawer').is_visible()
-    page.locator('#placesList .choose-place', has_text='Rostock').click()
-    page.wait_for_function('openwetterTest.state.place.name.includes("Rostock")')
-    assert page.locator('#placesDrawer').is_hidden()
-    page.wait_for_function('Object.keys(openwetterTest.state.forecasts).length===3')
-    page.locator('#citySearch').fill('Bonn')
-    page.locator('#searchForm').evaluate('(form)=>form.requestSubmit()')
-    page.wait_for_function('openwetterTest.state.place.name.startsWith("Bonn")')
-    page.locator('#placesBtn').click()
-    page.locator('#savePlace').click()
-    assert page.locator('#placesList .choose-place', has_text='Bonn').count() == 1
-    page.locator('#closePlaces').click()
-
-    # ICON-EU rain uses the official DWD hourly WMS, never mislabelled as ICON-D2.
-    page.evaluate('openwetterTest.selectMapLayer("precip")')
-    page.locator('#modelSelect').select_option('icon_eu')
-    assert state('model') == 'icon_eu'
-    page.locator('#viewForecast').click()
-    assert page.locator('#graphStack .plot-row').count() == 4
-    assert page.locator('#map').is_visible()
-    assert page.locator('#modelDescription').inner_text().startswith('ICON-EU')
-    page.wait_for_function('openwetterTest.state.euWms?.kind==="icon_eu_wms"')
-    page.wait_for_function('window.__mockCounts().wmsTiles>0')
-    assert 'ICON-EU hourly rain' in page.locator('#mapLayerName').inner_text()
-    assert 'ICON-EU' in page.locator('#timeRange').inner_text()
-    assert page.locator('#mapLegend').is_hidden()
-
-    # Observation overlays keep their own timestamps.
-    previous_time = state('selectedTime')
-    page.locator('#toggleClouds').click()
-    assert page.locator('#toggleClouds').get_attribute('aria-pressed') == 'true'
-    page.wait_for_function('document.querySelectorAll("#cloudTiles img").length>0')
-    url = page.locator('#cloudTiles img').first.get_attribute('src')
-    assert 'Satellite_meteosat_1km_euat_rgb_clouds_day_and_night' in url, url
-    assert 'Satellite © DWD' in page.locator('#radarAttribution').inner_text()
-    page.locator('#toggleClouds').click()
-    page.wait_for_function('document.querySelectorAll("#cloudTiles img").length===0')
-    page.locator('#toggleRain').click()
-    assert page.locator('#toggleRain').get_attribute('aria-pressed') == 'true'
-    page.wait_for_function('openwetterTest.state.displayedRadarTime===openwetterTest.state.radar.latest')
-    assert 'Radar © DWD' in page.locator('#radarAttribution').inner_text()
-    assert 'Observations do not follow ICON time' in page.locator('#mapModelName').inner_text()
-    assert state('selectedTime') == previous_time
-    page.locator('#toggleRain').click()
-    page.wait_for_function('document.querySelector("#radarCanvas").hidden')
-
-    # Radar history: its own time axis and up to two days of observed scans.
-    page.locator('#modeRadar').click()
-    assert 'OBSERVED RADAR' in page.locator('#mapLayerName').inner_text()
-    assert page.locator('#forecastHorizonButtons').is_hidden()
-    assert page.locator('#radarHistoryButtons').is_visible()
-    assert page.locator('#toggleRain').is_hidden()
-    assert 'mm/h' in page.locator('#mapLegend').inner_text()
-    page.locator('#radarHours2').click()
-    assert state('radarHours') == 2 and 'past 2h' in page.locator('#modeRadar').inner_text()
-    page.locator('#radarHours48').click()
-    assert state('radarHours') == 48 and 'past 2 days' in page.locator('#modeRadar').inner_text()
+    # Rain: observed radar up to the latest scan, then the nowcast, then ICON-D2, each labelled.
     info = page.evaluate('window.__mockInfo')
-    times = page.evaluate('openwetterTest.state.radar.frames.map(f=>f.time)')
-    assert info['c0'] + 3 * 300 not in times, 'A missing radar scan was invented'
-    assert times[-1] == info['latest']
-    page.wait_for_function('openwetterTest.state.displayedRadarTime===openwetterTest.state.radar.latest')
-    page.wait_for_function('''(()=>{const c=document.querySelector('#radarCanvas');
-      return c.getContext('2d').getImageData(Math.floor(c.width/2),Math.floor(c.height/2),1,1).data[3]>0;})()''')
-    check_exact_codes(page, 51.0, 7.0, {'west': 4, 'north': 56, 'lon': .1, 'lat': .1})
-    page.wait_for_function("document.querySelector('#radarCanvas').dataset.weatherFrame==='radar:'+openwetterTest.state.radar.latest")
-    assert page.locator('#smoothFrames').is_checked()
-    # Delay an uncached chunk: the previous scan stays visible while it downloads.
-    before = page.locator('#radarCanvas').evaluate('(canvas)=>canvas.toDataURL()')
-    page.evaluate('window.__delayRadar=true')
-    input_range(page, '#timeSlider', 5)
-    assert state('radarIndex') == 5
-    page.wait_for_timeout(240)
-    assert state('displayedRadarTime') != state('radar.frames[5].time')
-    assert before == page.locator('#radarCanvas').evaluate('(canvas)=>canvas.toDataURL()'), 'Radar vanished while loading'
-    assert 'loading' in page.locator('#mapModelName').inner_text()
-    page.evaluate('window.__releaseRadar()')
-    page.wait_for_function('openwetterTest.state.displayedRadarTime===openwetterTest.state.radar.frames[5].time')
-    assert 'loading' not in page.locator('#mapModelName').inner_text()
-    page.wait_for_function('''()=>{const old=document.querySelector('#radarTransitionCanvas');
-      return old.dataset.fromFrame&&old.dataset.toFrame==='radar:'+openwetterTest.state.radar.frames[5].time;}''')
-    assert '260ms' in page.locator('#radarTransitionCanvas').evaluate('(c)=>c.style.transition')
-    page.wait_for_timeout(310)
-    assert page.locator('#radarTransitionCanvas').evaluate('(c)=>getComputedStyle(c).opacity') in ('0', '0.0')
-    page.locator('#settingsBtn').click()
-    page.locator('#smoothFrames').uncheck()
-    page.locator('#settingsBtn').click()
-    input_range(page, '#timeSlider', 4)
-    page.wait_for_function('openwetterTest.state.displayedRadarTime===openwetterTest.state.radar.frames[4].time')
-    assert page.locator('#radarTransitionCanvas').is_hidden(), 'Reduced animation mode must be an instant swap'
-    # Scrubbing a whole chunk needs one tile transfer; after the GPU textures are
-    # dropped, revisiting comes from the persistent compressed cache, not the network.
-    for ix in range(0, 24):
-        input_range(page, '#timeSlider', ix)
-    chunk_url = f"https://openwetter-data.ekotov.pro/radar/c/{info['c0']}/0_0.webp"
-    assert page.evaluate('(u)=>window.__mockCounts().urls[u]', chunk_url) == 1
-    page.evaluate('openwetterTest.renderer.clear()')
-    input_range(page, '#timeSlider', 30)
-    input_range(page, '#timeSlider', 6)
-    page.wait_for_function('openwetterTest.state.displayedRadarTime===openwetterTest.state.radar.frames[6].time')
-    assert page.evaluate('(u)=>window.__mockCounts().urls[u]', chunk_url) == 1, 'Chunk tile downloaded twice'
-    page.locator('#settingsBtn').click()
-    page.locator('#smoothFrames').check()
-    page.locator('#settingsBtn').click()
-    assert 'Past ICON estimates' in page.locator('#plotsHeading').inner_text()
-    assert 'past: ICON model' in page.locator('#graphStack .plot-row').first.inner_text()
-    assert page.evaluate('openwetterTest.chartTime()') == state('radar.frames[6].time')
+    for t, source, label in ((info['latest'] - 1800, 'radar', 'Radar'), (info['latest'] + 900, 'nowcast', 'Nowcast'),
+                             (info['latest'] + 6 * 3600, 'forecast', 'ICON-D2')):
+        page.evaluate(f'openwetterTest.setTime({t})')
+        assert page.evaluate('openwetterTest.rainSource(openwetterTest.state.time)') == source, (t, source)
+        page.wait_for_function(f"(t=>t.startsWith('{label}')&&!t.includes('loading'))(document.querySelector('.chip-source')?.textContent||'')")
+    frame = page.evaluate('openwetterTest.rainFrameAt(openwetterTest.state.time).frame')
+    assert frame['source'] == 'icon' and frame['layer'] == 'precip', frame
+    sample = page.evaluate('openwetterTest.sample(52.0,7.5)')
+    assert sample['code'] == expected_code(52.0, 7.5, sample['index']), sample
 
-    # Rain sequence: observed radar, then the radar nowcast, then the model; each labelled.
-    page.locator('#modeContinuous').click()
-    combined = page.evaluate('openwetterTest.combinedFrames()')
-    kinds = [f['kind'] for f in combined]
-    assert kinds[0] == 'radar' and kinds[-1] == 'forecast'
-    assert kinds.index('nowcast') > max(i for i, k in enumerate(kinds) if k == 'radar')
-    assert kinds.index('forecast') > max(i for i, k in enumerate(kinds) if k == 'nowcast')
-    assert all(combined[i]['time'] < combined[i + 1]['time'] for i in range(len(combined) - 1))
-    assert 'OBSERVED RADAR' in page.locator('#timeRange').inner_text()
-    first_nowcast = kinds.index('nowcast')
-    page.wait_for_function("document.querySelector('#radarCanvas').dataset.weatherFrame?.startsWith('radar:')")
-    page.evaluate('window.__delayRadar=true')
-    input_range(page, '#timeSlider', first_nowcast)
-    assert 'RADAR NOWCAST' in page.locator('#timeRange').inner_text()
-    page.wait_for_timeout(240)
-    # While the nowcast downloads the observed scan stays visible, and the map
-    # label keeps describing that observation rather than the nowcast.
-    assert 'OBSERVED RADAR' in page.locator('#mapLayerName').inner_text()
-    assert 'loading nowcast' in page.locator('#mapModelName').inner_text()
-    page.evaluate('window.__releaseRadar()')
-    page.wait_for_function('document.querySelector("#radarCanvas").dataset.weatherFrame?.startsWith("nowcast:")')
-    assert 'not observed' in page.locator('#mapLayerName').inner_text()
-    assert 'loading' not in page.locator('#mapModelName').inner_text()
-    first_forecast = kinds.index('forecast')
-    input_range(page, '#timeSlider', first_forecast)
-    assert 'ICON FORECAST' in page.locator('#timeRange').inner_text()
-    assert page.locator('#boundaryTransitionCanvas').get_attribute('data-from-source') == 'radar'
-    assert page.locator('#boundaryTransitionCanvas').get_attribute('data-to-source') == 'forecast'
-    page.wait_for_function('document.querySelector("#boundaryTransitionCanvas").style.opacity==="0"')
-    page.wait_for_timeout(450)
+    # Exact codes for a field layer through decode -> texture -> per-fragment Mercator -> readback.
+    page.click('[data-layer=temperature]')
+    page.evaluate(f"openwetterTest.setTime({info['runTime']}+6*3600)")
+    page.wait_for_timeout(600)
+    for lat, lon in ((52.0, 7.5), (50.2, 10.25), (54.6, 13.0)):
+        s = page.evaluate(f'openwetterTest.sample({lat},{lon})')
+        assert s['layer'] == 'temperature' and s['code'] == expected_code(lat, lon, s['index']), (lat, lon, s)
+    page.wait_for_function("document.getElementById('mapChip').innerText.includes('Temperature')")
+    assert 'Precipitation' in page.inner_text('#mapChip')
+    page.click('[data-layer=temperature]')
+    assert st('field') is None
 
-    # Official warnings: overlay for the selected time and a list for the selected place.
-    page.locator('#modeForecast').click()
-    page.locator('#modelSelect').select_option('icon_d2')
-    page.locator('#horizon48').click()
-    page.evaluate('''()=>{const s=openwetterTest.state;
-      openwetterTest.setPlace({name:'Dortmund, Germany',latitude:51.5142,longitude:7.4653});
-      openwetterTest.setSelectedTime(s.anchor+3600);}''')
-    page.wait_for_function('!document.querySelector("#warningsList").hidden')
-    assert 'FROST' in page.locator('#warningsList').inner_text()
-    assert page.locator('#warningsCanvas').is_visible()
-    page.locator('#layersBtn').click()
-    page.locator('#toggleWarnings').uncheck()
-    page.locator('#closeLayers').click()
-    assert page.locator('#warningsCanvas').is_hidden()
-    page.evaluate('openwetterTest.selectMapLayer("wind_direction")')
-    page.wait_for_function('document.querySelector("#iconCanvas").dataset.weatherFrame?.includes(":wind_direction:")')
-    page.evaluate('openwetterTest.renderMap()')
-    page.screenshot(path=str(CAPTURES / f'{kind}.png'), full_page=True)
+    # One-finger scrubbing with the swapped Flowx defaults.
+    width = page.evaluate("document.getElementById('map').getBoundingClientRect().width")
+    range_min = page.evaluate('(openwetterTest.timeBounds().max+60-openwetterTest.timeBounds().min)/60')
+    h_rate, v_rate = 1.2 * 1440 / width, 1.2 * range_min / width   # minutes per px: sideways fine, up/down coarse
+    mid_time(page)
+    for dx in (50, 100):
+        got = minutes_for_drag(page, dx, 0)
+        assert abs(got - (dx - 6) * h_rate) <= 2, (dx, got, (dx - 6) * h_rate)
+        assert abs(minutes_for_drag(page, -dx, 0) + got) <= 1
+    got = minutes_for_drag(page, 0, -50, x=206, y=650)
+    assert abs(got - 44 * v_rate) <= 2, (got, 44 * v_rate)
+    assert abs(minutes_for_drag(page, 0, 50, x=206, y=600) + got) <= 1
+    a = st('time')   # L-shape: fine then coarse in one gesture
+    cdp_touch(page, path([(150, 600)], [(210, 600)], 15) + path([(210, 600)], [(210, 540)], 15)[1:] + [[(210, 540)]] * 12)
+    page.wait_for_timeout(250)
+    assert abs((st('time') - a) / 60 - (54 * h_rate + 60 * v_rate)) <= 4
+    mid_time(page)
+    a = st('time')   # a quick flick carries on
+    cdp_touch(page, path([(100, 600)], [(220, 600)], 4), step_ms=8)
+    page.wait_for_timeout(500)
+    assert (st('time') - a) / 60 > 114 * h_rate + 5, ((st('time') - a) / 60, 114 * h_rate)
+    for _ in range(3):   # clamped to today 00:00 ... day 7 23:59
+        minutes_for_drag(page, 0, -300, x=206, y=790, hold=0)
+    assert st('time') == page.evaluate('openwetterTest.timeBounds().max')
+    for _ in range(3):
+        minutes_for_drag(page, 0, 300, x=206, y=320, hold=0)
+    assert st('time') == page.evaluate('openwetterTest.timeBounds().min')
+    page.click('#clockBtn')
+    assert abs(st('time') - page.evaluate('Date.now()/1000')) < 90
+
+    # Tap a graph: jump to that time. Long-press: graph menu with add / delete / edit.
+    tap(page, 300, 110)
+    v = page.evaluate('openwetterTest.timeView()')
+    assert abs((st('time') - v['start']) / (v['end'] - v['start']) - 300 / 412) < .004
+    tap(page, 250, 180, hold=700)
+    assert page.inner_text('#popupMenu').split('\n') == ['Compare', 'Edit range', 'Edit graph', 'Add', 'Delete', 'Help']
+    page.locator('#popupMenu button', has_text='Add').click()
+    page.locator('.dialog .model-row', has_text='Wind').click()
+    assert page.locator('#graphs .graph').count() == 3
+    tap(page, 250, 250, hold=700)
+    page.locator('#popupMenu button', has_text='Delete').click()
+    assert page.locator('#graphs .graph').count() == 2
+    tap(page, 250, 120, hold=700)
+    page.locator('#popupMenu button', has_text='Edit graph').click()
+    page.get_by_role('checkbox', name='Cloud layers').uncheck()
+    back(page)
+    assert page.evaluate("JSON.parse(localStorage.getItem('openwetter.ui.v3')).graphs[0].elements.cloudLayers") is False
+    tap(page, 250, 120, hold=700)
+    page.locator('#popupMenu button', has_text='Edit range').click()
+    block = page.locator('.field-block', has_text='Precipitation')
+    block.locator('input[type=number]').nth(1).fill('8')
+    page.locator('.dialog-actions button', has_text='Save').click()
+    assert page.evaluate('openwetterTest.state.graphs[0].ranges.precip') == [0, 8]
+
+    # Two fingers: pan moves the forecast place to the map centre; pinch zooms.
+    z0, t0 = st('map.zoom'), st('time')
+    cdp_touch(page, path([(180, 600), (240, 600)], [(120, 540), (180, 540)], 20))
+    page.wait_for_function("openwetterTest.state.place.name==='Panned location'")
+    assert page.inner_text('#placeName') == 'Panned location' and st('time') == t0
+    page.wait_for_function('window.__mockCounts().point===2')
+    c = page.evaluate('[openwetterTest.state.map.latitude,openwetterTest.state.map.longitude,openwetterTest.state.place.latitude,openwetterTest.state.place.longitude]')
+    assert abs(c[0] - c[2]) < 1e-9 and abs(c[1] - c[3]) < 1e-9, c
+    cdp_touch(page, path([(176, 600), (236, 600)], [(146, 600), (266, 600)], 20))
+    page.wait_for_timeout(300)
+    assert abs(st('map.zoom') - z0 - 1) < .02, st('map.zoom') - z0
+
+    # Layer bar: toggles; legend follows the last picked layer; the layer editor's order persists.
+    page.click('[data-layer=precip]')
+    assert st('rain') is False
+    page.wait_for_function("document.getElementById('mapChip').innerText.trim()==='No map layer'")
+    page.click('[data-layer=precip]')
+    page.click('[data-layer=wind_speed]')
+    assert page.get_attribute('#legend', 'data-layer') == 'wind_speed'
+    page.click('[data-layer=wind_speed]')
+    page.click('[data-layer=warnings]')
+    assert st('warningsOn') is False
+    page.wait_for_function("document.getElementById('warningsCanvas').hidden")
+    page.click('[data-layer=warnings]')
+    page.click('#editLayersBtn')
+    page.get_by_role('checkbox', name='Snowfall').check()
+    page.locator('.tabs button', has_text='Order').click()
+    page.get_by_role('button', name='Move up Snowfall').click()
+    page.locator('.dialog-actions button', has_text='Save').click()
+    assert page.evaluate("[...document.querySelectorAll('#layerButtons button')].map(b=>b.dataset.layer).slice(-2)") == ['snow', 'warnings']
+
+    # Settings: units and swipe speed take effect immediately.
+    page.click('#placeBtn')
+    page.locator('#settingsBtn').click()
+    page.locator('.field-row', has_text='Wind').locator('select').select_option('kt')
+    assert page.inner_text('#unitWind') == 'kt'
+    page.locator('.drawer-item', has_text='Swipe settings').click()
+    page.locator('.field-block', has_text='Horizontal').locator('input').fill('2.4')
+    page.locator('.dialog-actions button', has_text='Save').click()
+    back(page)
+    mid_time(page)
+    got = minutes_for_drag(page, 100, 0)
+    assert abs(got - 94 * 2 * h_rate) <= 3, (got, 94 * 2 * h_rate)
+
+    # Model comparison (double-tap a day) shows each ICON model.
+    page.locator('#days button').first.dblclick()
+    page.wait_for_selector('.page .compare-model')
+    assert page.locator('.compare-model h3').all_inner_texts() == ['DWD ICON-D2 · 2 km', 'DWD ICON-EU · 7 km', 'DWD ICON · 11 km']
+    back(page)
+
+    # Search a place from the drawer.
+    before = page.evaluate('window.__mockCounts().point')
+    page.click('#placeBtn')
+    page.fill('#searchInput', 'Bonn')
+    page.press('#searchInput', 'Enter')
+    page.wait_for_function("openwetterTest.state.place.name.startsWith('Bonn')")
+    page.wait_for_function(f'window.__mockCounts().point==={before}+1')
+    page.wait_for_timeout(300)
+    page.screenshot(path=str(CAPTURES / 'mobile-412x915.png'))
     assert not errors, errors
-    print(f'{kind}: OK | renderer {page.evaluate("openwetterTest.renderer.kind")}/{page.evaluate("openwetterTest.renderer.format")}')
+    print('Mobile UI: layout, scrubbing, gestures, rain sequence, exact codes, layers, settings, compare: OK')
     page.context.close()
 
 
-def verify_grid_series_survive_point_api_abort(browser):
-    page, errors = new_page(browser, {'width': 390, 'height': 844}, mobile=True,
-                            flags={'__mockD2OfflinePoint': True, '__mockSeries': True})
-    page.wait_for_function('''()=>{
-      const f=openwetterTest?.state?.forecasts?.icon_d2;
-      return f?.fromRawGrid===true&&f?.gridOnly===true&&f?.hourly?.time?.length===192;
-    }''')
-    assert 'signal is aborted' not in page.locator('#message').inner_text().lower()
-    assert page.locator('#graphStack .plot-row').count() == 4
-    page.evaluate('openwetterTest.setSelectedTime(openwetterTest.state.anchor+3600)')
-    assert page.locator('#heroTemp').inner_text() == '11°'
-    assert page.locator('#quickCloud').inner_text() == '60%'
-    assert page.locator('#quickRain').inner_text() == '0.8 mm'
-    assert page.locator('#quickWind').inner_text() == '— km/h'
-    assert page.evaluate('window.__mockCounts().urls').keys().__len__() > 0
-    series_calls = page.evaluate('Object.keys(window.__mockCounts().urls).filter(u=>u.includes("/series/"))')
-    assert len(series_calls) == 1, series_calls
-    # The history index is fetched only for times before the newest run's first frame.
-    history_calls = page.evaluate('Object.keys(window.__mockCounts().urls).filter(u=>u.includes("/history/"))')
-    assert history_calls == [], history_calls
-    # Restore the point API: it fills wind without replacing grid temperature/rain/cloud.
-    page.evaluate('window.__mockD2OfflinePoint=false')
-    page.evaluate('openwetterTest.selectModel("icon_d2")')
-    page.wait_for_function('''()=>{const f=openwetterTest.state.forecasts.icon_d2;
-      return f?.fromRawGrid===true&&f?.gridOnly===false&&f.hourly.wind_speed_10m.some(v=>typeof v==='number'&&v>0);}''')
-    assert page.locator('#heroTemp').inner_text() == '11°'
-    assert page.locator('#quickCloud').inner_text() == '60%'
-    assert page.locator('#quickWind').inner_text() != '— km/h'
-    # 15-minute ICON-D2 rain frames crossfade without inventing intermediate frames.
-    page.wait_for_function("document.querySelector('#iconCanvas').dataset.weatherFrame?.startsWith('icon:')")
-    page.evaluate('openwetterTest.setSelectedTime(openwetterTest.state.anchor+900)')
-    page.wait_for_function('''()=>document.querySelector('#iconTransitionCanvas').dataset.toFrame?.endsWith(':'+openwetterTest.state.selectedTime)''')
+def ui_desktop(browser):
+    page, errors = new_page(browser, {'width': 1440, 'height': 900}, mobile=False)
+    page.wait_for_function('window.openwetterTest?.state.point&&openwetterTest.state.icon')
+    z0 = page.evaluate('openwetterTest.state.map.zoom')
+    page.mouse.move(720, 600)
+    page.mouse.wheel(0, -300)
+    page.wait_for_timeout(200)
+    assert page.evaluate('openwetterTest.state.map.zoom') > z0
+    t0 = page.evaluate('openwetterTest.state.time')
+    page.keyboard.press('ArrowRight')
+    assert page.evaluate('openwetterTest.state.time') - t0 == 3600
+    page.screenshot(path=str(CAPTURES / 'desktop-1440x900.png'))
     assert not errors, errors
-    print('Grid chart series with point-API outage and recovery: OK')
+    print('Desktop UI: wheel zoom and keyboard time steps: OK')
     page.context.close()
 
 
 def verify_missing_endpoints(browser):
     page, errors = new_page(browser, {'width': 390, 'height': 844}, mobile=True, flags={'__mock404': True})
-    page.wait_for_function('window.openwetterTest?.state.forecast?.hourly?.time?.length===48')
-    page.wait_for_function('openwetterTest.state.iconError&&openwetterTest.state.radarUnavailable')
+    page.wait_for_function('window.openwetterTest?.state.point&&openwetterTest.state.iconError')
     page.wait_for_timeout(300)
-    assert page.locator('#modeRadar').is_hidden()
-    assert page.locator('#toggleRain').is_hidden()
-    assert page.locator('#warningsList').is_hidden()
-    page.locator('#layersBtn').click()
-    values = page.locator('#layerList input[name="mapLayer"]').evaluate_all('els=>els.map(e=>e.value)')
-    assert 'radar' not in values and 'nowcast' not in values, values
-    page.locator('#modeContinuous').click()
-    assert page.evaluate('openwetterTest.combinedFrames().every(f=>f.kind==="forecast")')
+    assert page.evaluate('openwetterTest.rainSource(openwetterTest.state.time)') == 'forecast'
+    assert page.inner_text('.chip-source') in ('Loading…', 'Beyond ICON-D2 map')
+    assert page.locator('#warningsCanvas').is_hidden()
+    assert page.locator('#extremes span').count() == 14
     assert not errors, errors
-    print('Missing tile-service endpoints hide features without errors: OK')
+    page.context.close()
+    page, errors = new_page(browser, {'width': 390, 'height': 844}, mobile=True, flags={'__mockPointDown': True})
+    page.wait_for_function("openwetterTest.state.pointError&&!document.getElementById('toast').hidden")
+    assert 'Forecast unavailable' in page.inner_text('#toast')
+    assert not errors, errors
+    print('Missing tile-service or forecast endpoints degrade without errors: OK')
     page.context.close()
 
 
@@ -604,9 +462,8 @@ def main():
         browser = p.chromium.launch(headless=True, executable_path=executable,
                                     args=['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader',
                                           '--use-angle=swiftshader', '--ignore-gpu-blocklist'])
-        ui('mobile', {'width': 390, 'height': 844}, browser)
-        ui('desktop', {'width': 1440, 'height': 900}, browser)
-        verify_grid_series_survive_point_api_abort(browser)
+        ui_mobile(browser)
+        ui_desktop(browser)
         verify_missing_endpoints(browser)
         browser.close()
 
