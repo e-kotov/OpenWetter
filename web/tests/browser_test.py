@@ -442,7 +442,7 @@ def verify_missing_endpoints(browser):
     page.wait_for_function('window.openwetterTest?.state.point&&openwetterTest.state.iconError')
     page.wait_for_timeout(300)
     assert page.evaluate('openwetterTest.rainSource(openwetterTest.state.time)') == 'forecast'
-    assert page.inner_text('.chip-source') in ('Loading…', 'Beyond ICON-D2 map')
+    assert page.inner_text('.chip-source') in ('Loading…', 'No rain map for this time')
     assert page.locator('#warningsCanvas').is_hidden()
     assert page.locator('#extremes span').count() == 14
     assert not errors, errors

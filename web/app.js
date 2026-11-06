@@ -11,11 +11,12 @@ import {pointForecastURL,previousRunURL,parsePointForecast,attachPreviousRun,ser
 import {GRAPH_TYPES,RANGE_LABELS,defaultGraph,drawGraph} from './meteogram.mjs';
 import {DEFAULT_SWIPE,secondsPerPixel,validSwipeSetting,createScrub,steppedTime} from './gestures.mjs';
 import {ICONS} from './icons.mjs';
+import {loadWmsMetadata,chooseWmsSource,paintWmsRain,wmsMetadata} from './dwd-wms.mjs';
 
 const $=id=>document.getElementById(id);
 const dom=Object.fromEntries(['appRoot','placeBtn','placeName','modelName','infoBtn','moreBtn','meteo','extremes','graphs','days',
   'readout','clockBtn','readTime','readTemp','readRain','readWind','unitTemp','unitRain','unitWind','windDirIcon','nowLine','cursorLine',
-  'map','baseTiles','iconCanvas','iconTransitionCanvas','radarCanvas','radarTransitionCanvas','warningsCanvas','mapChip','toast',
+  'map','baseTiles','wmsCanvas','iconCanvas','iconTransitionCanvas','radarCanvas','radarTransitionCanvas','warningsCanvas','mapChip','toast',
   'layerBar','sourceBtn','layerButtons','editLayersBtn','legend','legendBar','legendTicks','mapCredit','scrim','drawer','searchForm',
   'searchInput','placesList','addPlaceBtn','locateBtn','settingsBtn','offlineBtn','helpBtn','popupMenu','dialogLayer','page'].map(k=>[k,$(k)]));
 const params=new URLSearchParams(location.search);
@@ -135,6 +136,7 @@ function setTime(t,{snap=true}={}){
 function dataStep(){
   const r=rainSource(state.time);
   if(state.field)return iconLayerSpec(state.field)?.step||3600;
+  if(r==='wms')return chooseWmsSource(wmsMetadata(),state.time)?.source.hours*3600||3600;
   return r==='radar'?300:r==='nowcast'?300:iconLayerSpec('precip')?.step||900;
 }
 function onTimeChanged(){updateReadout();updateCursor();updateDays();requestMap();}
@@ -217,12 +219,16 @@ function rainSource(t){
   if(r&&t<=r.latest+150&&t>=r.frames[0].time-150)return 'radar';
   const nc=state.nowcast?.frames;
   if(nc?.length&&t>(r?.latest??-Infinity)+150&&t<=nc.at(-1).time+150&&t>=nc[0].time-450)return 'nowcast';
+  // ICON-D2 tiles first; beyond them DWD's ICON-EU / ICON Global map images.
+  if(state.icon&&(iconFrameAt('precip',t)||t<(iconLayerSpec('precip')?.end??-Infinity)))return 'forecast';
+  if(chooseWmsSource(wmsMetadata(),t))return 'wms';
   return 'forecast';
 }
 function rainFrameAt(t){
   const source=rainSource(t);
   if(source==='radar'){const i=Math.max(0,floorFrame(state.radar.frames,t));return {source,frame:radarFrame(state.radar,state.radar.frames[i])};}
   if(source==='nowcast'){const fr=state.nowcast.frames,i=Math.max(0,floorFrame(fr,t));return {source,frame:nowcastFrame(state.nowcast,fr[i].time)};}
+  if(source==='wms')return {source,frame:null,wms:chooseWmsSource(wmsMetadata(),t)};
   return {source,frame:state.icon?iconFrameAt('precip',t):null};
 }
 
@@ -406,8 +412,24 @@ function renderMap(){
     onError:refreshAfterMissingTiles});
   if(!rain?.frame)shownRain=null;
   dom.radarCanvas.style.opacity=String(state.opacity.rain);
+  paintWmsLayer(view,rain);
   drawWarningsLayer(view);
   updateChip();updateLegend();
+}
+/* ICON-EU / ICON Global rain from DWD map images beyond the ICON-D2 tiles */
+let wmsKey='',wmsGen=0,wmsShown=null;
+function paintWmsLayer(view,rain){
+  dom.wmsCanvas.style.opacity=String(state.opacity.rain);
+  if(rain?.source!=='wms'||!rain.wms){
+    if(wmsKey||wmsShown){wmsKey='';wmsGen++;wmsShown=null;const {ctx}=prepareCanvas(dom.wmsCanvas,view.width,view.height,view.ratio);ctx.clearRect(0,0,view.width,view.height);}
+    return;
+  }
+  const key=viewKey(view,rain.wms.source.id+':'+rain.wms.time);
+  if(key===wmsKey)return;
+  wmsKey=key;const gen=++wmsGen;
+  const {ctx}=prepareCanvas(dom.wmsCanvas,view.width,view.height,view.ratio);
+  void paintWmsRain(ctx,view,rain.wms,()=>gen===wmsGen).then(r=>{if(r&&gen===wmsGen){wmsShown=r;updateChip();}})
+    .catch(()=>{if(gen===wmsGen)toast('DWD map images unavailable',{error:true});});
 }
 let prefetchTimer=0;
 function schedulePrefetch(frame,view){
@@ -481,11 +503,18 @@ function updateChip(){
   if(state.rain){
     // Describe the frame actually on screen; say so while the requested one loads.
     const wanted=rainFrameAt(state.time),frame=shownRain,sampled=chipValues.rain?.key===frame?.key&&frame;
+    if(wanted.source==='wms'){
+      const w=wmsShown,c=w?.centre,loading=!w||w.key!==wanted.wms.source.id+':'+wanted.wms.time?' · loading':'';
+      const val=!w||!c?'—':c.hi===0?rainText(0):`${rainText(c.lo)}–${rainText(c.hi)}`;
+      nodes.push(chipLayer('rain','Precipitation',val,state.units.precipitation));
+      source={text:w?`${w.source.model} ${w.source.hours} h · ${utcHour(w.run)}${loading}`:'Loading…',cls:''};
+    }else{
     nodes.push(chipLayer('rain','Precipitation',sampled?rainText(chipValues.rain.value??0):'—',state.units.precipitation));
     const kind=frame?(frame.source==='icon'?'forecast':frame.source):null,loading=wanted.frame&&frame?.key!==wanted.frame.key?' · loading':'';
     source=kind==='radar'?{text:`Radar ${hhmm(frame.time)}${loading}`,cls:'observed'}:kind==='nowcast'?{text:`Nowcast ${hhmm(frame.time)}${loading}`,cls:'nowcast'}:
       kind==='forecast'?{text:`ICON-D2 ${utcHour(frame.runTime)}${loading}`,cls:''}:
-      {text:wanted.frame?'Loading…':wanted.source==='forecast'&&state.icon?'Beyond ICON-D2 map':'Loading…',cls:''};
+      {text:wanted.frame?'Loading…':wanted.source==='forecast'&&state.icon?'No rain map for this time':'Loading…',cls:''};
+    }
   }
   if(state.field){
     const frame=shownField,sampled=chipValues.field?.key===frame?.key&&frame,[val,unit]=fieldValueText(state.field,sampled?chipValues.field.value:null);
@@ -986,9 +1015,9 @@ loadPreferences();
     state.place={name:params.get('name')||'Shared place',latitude:lat,longitude:lon};state.map.latitude=lat;state.map.longitude=lon;}
 }
 wire();updateHeader();renderLayerBar();renderMeteo();updateReadout();
-void loadPoint();void loadIconRun();
+void loadPoint();void loadIconRun();void loadWmsMetadata().then(()=>{requestMap();updateChip();});
 void weatherDiskCache.dropOtherNamespaces();
-setInterval(()=>{if(!document.hidden)void loadIconRun();},120_000);
+setInterval(()=>{if(!document.hidden){void loadIconRun();void loadWmsMetadata().then(requestMap);}},120_000);
 setInterval(()=>{updateCursor();updateDays();},60_000);
 if('serviceWorker' in navigator&&!params.has('no-sw')&&(location.protocol==='https:'||location.hostname==='localhost'))
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
