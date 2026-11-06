@@ -5,9 +5,10 @@
 import {PRESSURE_LEVELS,MODEL_LABELS} from './forecast.mjs';
 
 export const COLORS=Object.freeze({
-  bandA:'#ffb600',bandB:'#ffc022',cloud:'#8e8e8e',precip:'#00539a',wind:'#548a20',gust:'#8cb85c',
-  tempLine:'#005eac',warmer:'#ffdbcb',colder:'#d4e3ff',grid:'#d3e0ec',plain:'#f4f6f9',axis:'#5c6470',
-  freezing:'#9494fd',transition:'#e53935',dayLine:'rgba(0,0,0,.16)',pressure:'#6a3fb0',humidity:'#1f78b4',dew:'#2e9d8f',
+  // Values as in Flowx's graph definitions (APK assets/graph/*.json), not screenshot estimates.
+  bandA:'#ffb600',bandB:'#ffc022',cloud:'#8e8e8e',precip:'#00539a',wind:'#1a781f',gust:'#1a781f',
+  tempLine:'#005faf',warmer:'#ffdbcb',colder:'#d4e3ff',grid:'#00539a',plain:'#f4f6f9',axis:'#00539a',
+  freezing:'#5050ff',transition:'rgba(0,0,0,.533)',dayLine:'rgba(0,0,0,.533)',pressure:'#000000',humidity:'#0089df',dew:'#2e9d8f',
 });
 /** Element ids, labels and defaults per graph type (Flowx "Edit graph"). */
 const COMMON=[
@@ -73,15 +74,15 @@ function inView(f,view){
 }
 function drawTimeGrid(g,days,el,{line=COLORS.dayLine,ticks=true}={}){
   const {ctx,x,w,h}=g;
-  if(el.timeGrid){ctx.strokeStyle=line;ctx.lineWidth=1;
+  if(el.timeGrid){ctx.strokeStyle=line;ctx.lineWidth=.3;
     for(const d of days.slice(1)){const xx=Math.round(x(d.start))+.5;ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,h);ctx.stroke();}}
-  if(el.timeMarks&&ticks){ctx.strokeStyle=line;ctx.lineWidth=1;
+  if(el.timeMarks&&ticks){ctx.strokeStyle=line;ctx.lineWidth=.3;
     for(const d of days)for(let k=1;k<4;k++){const xx=Math.round(x(d.start+k*(d.end-d.start)/4))+.5;
       if(xx<0||xx>w)continue;ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,4);ctx.moveTo(xx,h-4);ctx.lineTo(xx,h);ctx.stroke();}}
 }
 function drawYScale(g,ticks,scale,el,format=v=>String(Math.round(v))){
   const {ctx,w,h}=g;
-  if(el.yGrid){ctx.strokeStyle=COLORS.grid;ctx.lineWidth=1;
+  if(el.yGrid){ctx.strokeStyle=COLORS.grid;ctx.lineWidth=.3;
     for(const v of ticks){const y=Math.round(scale(v))+.5;if(y<1||y>h-1)continue;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}}
   if(el.yScales){ctx.font='10px system-ui,sans-serif';ctx.textAlign='right';ctx.fillStyle=COLORS.axis;
     for(const v of ticks){const y=clampY(scale(v),h);ctx.textBaseline=y<8?'top':y>h-8?'bottom':'middle';ctx.fillText(format(v),w-2,y);}}
@@ -94,7 +95,7 @@ function drawTransitions(g,f,view,el){
     if(tr.time<=view.start||tr.time>=view.end)continue;
     const xx=Math.round(x(tr.time))+.5;
     ctx.strokeStyle=COLORS.transition;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,h);ctx.stroke();
-    if(el.transitionLabels){ctx.font='9px system-ui,sans-serif';ctx.fillStyle='#8a8f98';ctx.textBaseline='top';
+    if(el.transitionLabels){ctx.font='10px system-ui,sans-serif';ctx.fillStyle=COLORS.transition;ctx.textBaseline='top';
       ctx.textAlign='right';ctx.fillText(MODEL_LABELS[tr.from].replace('ICON-',''),xx-2,2);
       ctx.textAlign='left';ctx.fillText(MODEL_LABELS[tr.to].replace('ICON-',''),xx+2,2);}
   }
@@ -171,11 +172,10 @@ function drawEveryday(g,f,view,days,cfg,ctxInfo){
     }
   }
   const [w0,w1]=r.wind||[0,75],ws=v=>h-(v-w0)/(w1-w0)*h;
-  const line=(key,color,dash)=>{ctx.strokeStyle=color;ctx.lineWidth=1.4;ctx.setLineDash(dash);
-    for(const run of runs(d.time,d.get(key),x,v=>clampY(ws(v),h))){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}
-    ctx.setLineDash([]);};
-  if(el.gust)line('wind_gusts_10m',COLORS.gust,[3,2]);
-  if(el.wind)line('wind_speed_10m',COLORS.wind,[]);
+  const line=(key,color,width)=>{ctx.strokeStyle=color;ctx.lineWidth=width;
+    for(const run of runs(d.time,d.get(key),x,v=>clampY(ws(v),h))){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}};
+  if(el.gust)line('wind_gusts_10m',COLORS.gust,.8);
+  if(el.wind)line('wind_speed_10m',COLORS.wind,1.2);
   drawTimeGrid(g,days,el);
   drawTransitions(g,f,view,el);
   drawWarnings(g,ctxInfo.warnings,el);
@@ -202,7 +202,7 @@ function lineGraph(g,f,view,days,cfg,{key,color,unitValue=v=>v,range,legend,form
   drawTimeGrid(g,days,el,{line:COLORS.grid});
   drawYScale(g,range?[lo,(lo+hi)/2,hi]:nt.ticks,scale,el,format);
   extra?.({d,scale,lo,hi});
-  if(cfg.elements.line!==false){ctx.strokeStyle=color;ctx.lineWidth=1.5;
+  if(cfg.elements.line!==false){ctx.strokeStyle=color;ctx.lineWidth=1.2;
     for(const run of runs(d.time,values,x,scale)){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
   drawTransitions(g,f,view,el);drawWarnings(g,ctxInfo0(cfg),el);
   drawLegend(g,legend,el);
@@ -232,10 +232,10 @@ function drawTemperature(g,f,view,days,cfg,info){
       else{const f0=d0/(d0-d1),xm=x0+(x1-x0)*f0,tm=t0+(t1-t0)*f0;seg(x0,xm,t0,tm,p0,tm,d0<0);seg(xm,x1,tm,t1,tm,p1,d1<0);}
     }
   }
-  if(el.levels){const zero=info.temp(0);if(zero>lo&&zero<hi){ctx.strokeStyle=COLORS.freezing;ctx.lineWidth=1;
+  if(el.levels){const zero=info.temp(0);if(zero>lo&&zero<hi){ctx.strokeStyle=COLORS.freezing;ctx.lineWidth=1.2;
     const y=Math.round(scale(zero))+.5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}}
   if(el.dewPoint){ctx.strokeStyle=COLORS.dew;ctx.lineWidth=1.2;for(const run of runs(d.time,dew,x,scale)){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
-  if(el.line){ctx.strokeStyle=COLORS.tempLine;ctx.lineWidth=1.5;for(const run of runs(d.time,temp,x,scale)){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
+  if(el.line){ctx.strokeStyle=COLORS.tempLine;ctx.lineWidth=1.1;for(const run of runs(d.time,temp,x,scale)){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
   drawTransitions(g,f,view,el);drawWarnings(g,info.warnings,el);
   drawLegend(g,[el.delta?['colder']:null,el.delta?['warmer']:null,el.line?['thermo']:null].filter(Boolean),el);
 }
@@ -244,8 +244,8 @@ function drawWind(g,f,view,days,cfg,info){
   const [w0,w1]=cfg.ranges.wind||[0,75],scale=v=>h-1-(v-w0)/(w1-w0)*(h-2);
   ctx.fillStyle=COLORS.plain;ctx.fillRect(0,0,w,h);
   drawTimeGrid(g,days,el,{line:COLORS.grid});drawYScale(g,[w0,(w0+w1)/2,w1],scale,el,v=>String(Math.round(info.wind(v))));
-  if(el.gust){ctx.strokeStyle=COLORS.gust;ctx.setLineDash([3,2]);ctx.lineWidth=1.3;for(const run of runs(d.time,d.get('wind_gusts_10m'),x,v=>clampY(scale(v),h))){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}ctx.setLineDash([]);}
-  if(el.wind){ctx.strokeStyle=COLORS.wind;ctx.lineWidth=1.5;for(const run of runs(d.time,d.get('wind_speed_10m'),x,v=>clampY(scale(v),h))){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
+  if(el.gust){ctx.strokeStyle=COLORS.gust;ctx.lineWidth=.8;for(const run of runs(d.time,d.get('wind_gusts_10m'),x,v=>clampY(scale(v),h))){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
+  if(el.wind){ctx.strokeStyle=COLORS.wind;ctx.lineWidth=1.2;for(const run of runs(d.time,d.get('wind_speed_10m'),x,v=>clampY(scale(v),h))){ctx.beginPath();smoothPath(ctx,run);ctx.stroke();}}
   if(el.arrows){const dir=d.get('wind_direction_10m');ctx.strokeStyle='#33465c';ctx.lineWidth=1.2;
     d.time.forEach((t,i)=>{if(t%(3*3600)!==0||!finite(dir[i]))return;const xx=x(t);if(xx<4||xx>w-30)return;
       ctx.save();ctx.translate(xx,h-8);ctx.rotate((dir[i]+180)*Math.PI/180);ctx.beginPath();ctx.moveTo(0,4);ctx.lineTo(0,-4);ctx.moveTo(-2.5,-1.5);ctx.lineTo(0,-4);ctx.lineTo(2.5,-1.5);ctx.stroke();ctx.restore();});}

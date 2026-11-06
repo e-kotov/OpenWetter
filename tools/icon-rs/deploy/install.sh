@@ -9,11 +9,12 @@ id openwetter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/
 install -d -m 0755 /opt/openwetter/bin
 install -m 0755 icon-rs /opt/openwetter/bin/icon-rs
 install -d -m 0750 -o root -g openwetter /etc/openwetter
-install -m 0644 openwetter-publish.service openwetter-publish.timer openwetter-live.service openwetter-live.timer /etc/systemd/system/
+install -m 0644 openwetter-publish.service openwetter-publish.timer openwetter-publish-eu.service openwetter-publish-eu.timer \
+  openwetter-publish-global.service openwetter-publish-global.timer openwetter-live.service openwetter-live.timer /etc/systemd/system/
 systemctl daemon-reload
 if [ -f /etc/openwetter/r2.env ]; then
-  systemctl enable --now openwetter-publish.timer openwetter-live.timer
+  systemctl enable --now openwetter-publish.timer openwetter-publish-eu.timer openwetter-publish-global.timer openwetter-live.timer
   echo "timers enabled"
 else
-  echo "add /etc/openwetter/r2.env, then: systemctl enable --now openwetter-publish.timer openwetter-live.timer"
+  echo "add /etc/openwetter/r2.env, then: systemctl enable --now openwetter-publish.timer openwetter-publish-eu.timer openwetter-publish-global.timer openwetter-live.timer"
 fi

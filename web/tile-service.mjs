@@ -59,11 +59,23 @@ export function decodeCode(layer,code){
 }
 
 /* ---------- palettes: value-domain colour stops -> 256-entry code LUT ---------- */
+/** Position (0..1) of a rain rate on the rain colour scale, spaced as Flowx's
+ * legend: 0.05 mm/h at the start, 1, 5 and 20 mm/h at 1/4, 1/2 and 3/4, 50
+ * near the end; logarithmic between those marks. */
+export function rainScalePosition(v){
+  if(!(v>0.05))return 0;
+  if(v<=1)return .02+.23*Math.log(v/.05)/Math.log(20);
+  if(v<=5)return .25+.25*Math.log(v)/Math.log(5);
+  if(v<=20)return .5+.25*Math.log(v/5)/Math.log(4);
+  return Math.min(1,.75+.22*Math.log(v/20)/Math.log(2.5));
+}
 // [value, '#rrggbb', alpha 0..1]. Values outside the first/last stop clamp.
 export const PALETTE_STOPS=Object.freeze({
-  // Magenta (drizzle) -> blue -> cyan -> green (5 mm/h) -> yellow -> red -> dark red (50+ mm/h).
-  rain:[[0.05,'#c23cd4',.55],[0.3,'#7b22d8',.72],[1,'#2233e0',.8],[2,'#1585ee',.85],[3.5,'#19cfe6',.88],
-    [5,'#22c045',.9],[10,'#e6e01e',.92],[20,'#f07012',.94],[35,'#d0141a',.95],[60,'#760012',.95]],
+  // Flowx's magenta-blue-green-red ramp ("mbgr"), sampled from its colour-map image at the
+  // positions of rainScalePosition (Flowx's legend: 1, 5, 20 mm/h at 1/4, 1/2, 3/4). Opaque
+  // here: the layer opacity setting (default 90 %, as Flowx) applies on top.
+  rain:[[0.05,'#d000d1',1],[0.2,'#4600b7',1],[0.5,'#0d00f1',1],[1,'#0140fd',1],[2,'#00e8fd',1],[3.5,'#00fd86',1],
+    [5,'#00fd2b',1],[10,'#98fd00',1],[20,'#fd9800',1],[35,'#db0000',1],[50,'#990000',1],[64,'#800000',1]],
   snow:[[0.05,'#eef3ff',.45],[0.3,'#cbd8ff',.65],[1,'#9fb1ff',.8],[3,'#7a7cf0',.85],
     [10,'#9b4fd8',.9],[30,'#d23ac0',.92]],
   cloud:[[0,'#ffffff',0],[20,'#eef2f7',.18],[50,'#dfe5ee',.42],[80,'#cdd5e0',.66],[100,'#bfc8d4',.82]],
@@ -200,10 +212,11 @@ const tileList=list=>{
   return m;
 };
 
-/* ---------- ICON-D2 run manifest ---------- */
+/* ---------- ICON run manifests (ICON-D2, ICON-EU, ICON Global) ---------- */
+export const ICON_MODELS=Object.freeze({icon_d2:'ICON-D2',icon_eu:'ICON-EU',icon_global:'ICON'});
 export function parseIconManifest(data,manifestPath,{base=DATA_BASE}={}){
-  if(!data||data.schema!=='openwetter-tiles-2'||data.model!=='icon_d2'||typeof data.layers!=='object')
-    throw new Error('Unsupported ICON-D2 manifest');
+  if(!data||data.schema!=='openwetter-tiles-2'||!ICON_MODELS[data.model]||typeof data.layers!=='object')
+    throw new Error('Unsupported ICON manifest');
   const runTime=parseRunTime(data.run);
   if(runTime==null)throw new Error('ICON-D2 manifest has no valid run time');
   const grid=parseGrid(data.grid),size=data.tile;
@@ -212,39 +225,60 @@ export function parseIconManifest(data,manifestPath,{base=DATA_BASE}={}){
   const layers={};
   for(const [name,l] of Object.entries(data.layers)){
     if(!LAYER_INFO[name]||!Number.isInteger(l?.step_minutes)||l.step_minutes<=0||!Array.isArray(l.chunks))continue;
-    const chunks=l.chunks.filter(c=>Number.isInteger(c?.chunk)&&Number.isInteger(c.first_step_minutes)&&Number.isInteger(c.frames)&&c.frames>0)
-      .map(c=>({chunk:c.chunk,first:runTime+c.first_step_minutes*60,frames:c.frames,tiles:tileList(c.tiles)}))
+    // ICON-EU and ICON Global change from hourly to 3-hourly frames: each chunk has its own step.
+    const chunks=l.chunks.filter(c=>Number.isInteger(c?.chunk)&&Number.isInteger(c.first_step_minutes)&&Number.isInteger(c.frames)&&c.frames>0
+        &&(c.step_minutes==null||Number.isInteger(c.step_minutes)&&c.step_minutes>0))
+      .map(c=>({chunk:c.chunk,first:runTime+c.first_step_minutes*60,frames:c.frames,step:(c.step_minutes??l.step_minutes)*60,tiles:tileList(c.tiles)}))
       .sort((a,b)=>a.first-b.first);
     if(!chunks.length)continue;
-    const step=l.step_minutes*60,last=chunks.at(-1);
-    layers[name]={name,step,chunks,start:chunks[0].first,end:last.first+(last.frames-1)*step,
-      code:l.code||{},missingTile:l.missing_tile||''};
+    const last=chunks.at(-1);
+    layers[name]={name,step:chunks[0].step,chunks,start:chunks[0].first,end:last.first+(last.frames-1)*last.step,
+      period:LAYER_INFO[name].kind==='rate',code:l.code||{},missingTile:l.missing_tile||''};
   }
   let series=null;
   const s=data.series;
   if(s&&Number.isInteger(s.tile)&&s.tile>0&&typeof s.path==='string'&&Array.isArray(s.layers)){
     series={tile:s.tile,path:s.path,tiles:tileList(s.tiles),
       layers:s.layers.filter(x=>typeof x?.name==='string'&&Number.isInteger(x.frames)&&x.frames>0&&Number.isInteger(x.step_minutes))
-        .map(x=>({name:x.name,frames:x.frames,step:x.step_minutes*60,first:runTime+(x.first_step_minutes??x.step_minutes)*60}))};
+        .map(x=>{const first=runTime+(x.first_step_minutes??x.step_minutes)*60;
+          const times=Array.isArray(x.lead_minutes)&&x.lead_minutes.length===x.frames&&x.lead_minutes.every(Number.isInteger)
+            ?x.lead_minutes.map(m=>runTime+m*60):Array.from({length:x.frames},(_,i)=>first+i*x.step_minutes*60);
+          return {name:x.name,frames:x.frames,step:x.step_minutes*60,first,times};})};
   }
-  return {kind:'icon',run:data.run,runTime,generatedAt:data.generated_at,grid,tile:size,
-    framesPerChunk:data.frames_per_chunk,dir,layers,series,source:data.source||'DWD ICON-D2'};
+  return {kind:'icon',model:data.model,label:ICON_MODELS[data.model],run:data.run,runTime,generatedAt:data.generated_at,grid,tile:size,
+    framesPerChunk:data.frames_per_chunk,dir,layers,series,source:data.source||'DWD '+ICON_MODELS[data.model]};
+}
+/** Chunk and frame index of `layer` for `time`. Rain and snow frames hold the
+ * total of the period ending at the frame (t - step, t]; other layers are
+ * instants, so the nearest frame is used (within half a step of the run). */
+function locateFrame(L,time){
+  if(L.period){
+    for(const c of L.chunks){const last=c.first+(c.frames-1)*c.step;
+      if(time>c.first-c.step&&time<=last+1e-6)return {c,k:Math.max(0,Math.ceil((time-c.first)/c.step-1e-9))};}
+    // Exactly on a 15-minute D2 boundary before the first frame: nearest, as before.
+  }
+  let best=null;
+  for(const c of L.chunks){
+    const k=Math.max(0,Math.min(c.frames-1,Math.round((time-c.first)/c.step))),d=Math.abs(c.first+k*c.step-time);
+    if(!best||d<best.d)best={c,k,d};
+  }
+  if(!best)return null;
+  const first=L.chunks[0],last=L.chunks.at(-1);
+  if(time<L.start-first.step/2||time>L.end+last.step/2)return null;
+  return best;
 }
 /** Frame of `layer` valid nearest to `time` inside one run, or null when the
  * time lies outside the run (more than half a step before/after). */
 export function iconFrame(manifest,layer,time){
   const L=manifest?.layers?.[layer];
   if(!L||!Number.isFinite(time))return null;
-  if(time<L.start-L.step/2||time>L.end+L.step/2)return null;
-  const k=Math.round((time-L.start)/L.step);
-  const frameTime=L.start+k*L.step;
-  const chunk=L.chunks.find(c=>frameTime>=c.first&&frameTime<=c.first+(c.frames-1)*L.step);
-  if(!chunk)return null;
-  const index=Math.round((frameTime-chunk.first)/L.step);
+  const at=locateFrame(L,time);if(!at)return null;
+  const chunk=at.c,index=at.k,frameTime=chunk.first+index*chunk.step;
   const pad=String(chunk.chunk).padStart(2,'0');
-  // History slices hold the same run at another tile size, so their keys differ.
-  const id=`${manifest.history?'icon-history':'icon'}:${manifest.run}:${layer}`;
-  return {source:'icon',layer,time:frameTime,run:manifest.run,runTime:manifest.runTime,
+  // History slices hold the same run at another tile size, so their keys differ; so do models.
+  const model=manifest.model||'icon_d2';
+  const id=`${manifest.history?'icon-history':model==='icon_d2'?'icon':model}:${manifest.run}:${layer}`;
+  return {source:'icon',model,label:manifest.label||ICON_MODELS[model],layer,time:frameTime,step:chunk.step,run:manifest.run,runTime:manifest.runTime,
     grid:manifest.grid,tile:manifest.tile,frames:chunk.frames,index,chunk:chunk.chunk,tiles:chunk.tiles,
     key:`${id}:${frameTime}`,
     url:manifest.tileUrl?(x,y)=>manifest.tileUrl(layer,x,y):(x,y)=>`${manifest.dir}${layer}/c${pad}/${x}_${y}.webp`,
@@ -255,7 +289,7 @@ export function iconAdjacentChunk(manifest,frame,direction=1){
   const L=manifest?.layers?.[frame?.layer];if(!L)return null;
   const i=L.chunks.findIndex(c=>c.chunk===frame.chunk),c=L.chunks[i+direction];
   if(!c)return null;
-  return iconFrame(manifest,frame.layer,c.first+(direction>0?0:(c.frames-1)*L.step));
+  return iconFrame(manifest,frame.layer,c.first+(direction>0?0:(c.frames-1)*c.step));
 }
 /** Newest run covering `time` for `layer`; manifests sorted in any order. */
 export function chooseRun(manifests,layer,time){
@@ -283,12 +317,12 @@ export function parseHistoryIndex(data,{base=DATA_BASE}={}){
       if(!LAYER_INFO[name]||!Number.isInteger(l?.step_minutes)||l.step_minutes<=0||!Number.isInteger(l.first_step_minutes)||
         l.first_step_minutes<0||!Number.isInteger(l.frames)||l.frames<1)continue;
       const step=l.step_minutes*60,first=runTime+l.first_step_minutes*60;
-      layers[name]={name,step,chunks:[{chunk:0,first,frames:l.frames,tiles:tileList(l.tiles)}],
-        start:first,end:first+(l.frames-1)*step,code:data.codes?.[name]||{},missingTile:''};
+      layers[name]={name,step,chunks:[{chunk:0,first,frames:l.frames,step,tiles:tileList(l.tiles)}],
+        start:first,end:first+(l.frames-1)*step,period:LAYER_INFO[name].kind==='rate',code:data.codes?.[name]||{},missingTile:''};
     }
     if(!Object.keys(layers).length)continue;
     const runPath=path.replace('{run_key}',s.run_key);
-    out.push({kind:'icon',history:true,run:s.run,runTime,generatedAt:data.generated_at,grid,tile:size,framesPerChunk:null,
+    out.push({kind:'icon',model:'icon_d2',label:'ICON-D2',history:true,run:s.run,runTime,generatedAt:data.generated_at,grid,tile:size,framesPerChunk:null,
       dir:null,layers,series:null,source:data.source||'DWD ICON-D2',
       tileUrl:(layer,x,y)=>base+runPath.replace('{layer}',layer).replace('{x}',x).replace('{y}',y)});
   }
@@ -297,7 +331,7 @@ export function parseHistoryIndex(data,{base=DATA_BASE}={}){
 /** Valid times of a layer within one manifest, for building the timeline. */
 export function layerTimes(manifest,layer){
   const L=manifest?.layers?.[layer];if(!L)return [];
-  const out=[];for(let t=L.start;t<=L.end;t+=L.step)out.push(t);return out;
+  const out=[];for(const c of L.chunks)for(let i=0;i<c.frames;i++)out.push(c.first+i*c.step);return out;
 }
 
 /* ---------- radar & nowcast ---------- */

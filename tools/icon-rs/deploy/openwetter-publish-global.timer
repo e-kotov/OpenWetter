@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenWetter: check for a new DWD ICON Global (days 6-7) run every 15 minutes
+
+[Timer]
+OnCalendar=*:13/15
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

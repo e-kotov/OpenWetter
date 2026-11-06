@@ -1,10 +1,11 @@
 import {DEFAULT_PLACES,clamp,wrappedLongitude,clampLatitude,mercator,unmercator,placeKey,nearestIndex} from './logic.mjs';
-import {DATA_BASE,LAYER_INFO,PALETTE_STOPS,decodeCode,parseLatest,parseIconManifest,iconFrame,iconAdjacentChunk,chooseRun,
+import {DATA_BASE,LAYER_INFO,PALETTE_STOPS,rainScalePosition,decodeCode,parseLatest,parseIconManifest,iconFrame,iconAdjacentChunk,chooseRun,
   parseHistoryIndex,parseRadarIndex,radarFrame,parseNowcastIndex,nowcastFrame,parseWarnings,activeWarnings,
   warningsCovering} from './tile-service.mjs';
 import {fetchPointer,fetchImmutableJSON,tileBlob} from './tile-loader.mjs';
 import {createRasterRenderer,drawWindArrows,visibleFrameTiles} from './raster-renderer.mjs';
 import {weatherDiskCache} from './frame-cache.mjs';
+import {loadOwnSeries,applyOwnSeries} from './own-series.mjs';
 import {createWeatherCrossfade} from './frame-transition.mjs';
 import {pointForecastURL,previousRunURL,parsePointForecast,attachPreviousRun,seriesValueAt,chartDays,dailyExtremes,
   POINT_MODELS,MODEL_LABELS} from './forecast.mjs';
@@ -59,7 +60,7 @@ const state={
   bar:[...DEFAULT_BAR],rain:true,field:null,warningsOn:true,lastPicked:'precip',
   graphs:[defaultGraph('everyday'),defaultGraph('temperature')],
   swipe:structuredClone(DEFAULT_SWIPE),units:{temperature:'°C',precipitation:'mm/h',wind:'km/h',pressure:'hPa'},
-  source:'seamless',opacity:{rain:.85,field:.8},smoothFrames:true,
+  source:'seamless',opacity:{rain:.9,field:.8},smoothFrames:true,
   time:Math.floor(Date.now()/60000)*60,point:null,pointError:null,pointLoading:false,
   latest:null,icon:null,iconError:null,history:null,radar:null,nowcast:null,warnings:null,
 };
@@ -135,14 +136,19 @@ function setTime(t,{snap=true}={}){
 }
 function dataStep(){
   const r=rainSource(state.time);
-  if(state.field)return iconLayerSpec(state.field)?.step||3600;
+  if(state.field)return iconFrameAt(state.field,state.time)?.step||iconLayerSpec(state.field)?.step||3600;
   if(r==='wms')return chooseWmsSource(wmsMetadata(),state.time)?.source.hours*3600||3600;
-  return r==='radar'?300:r==='nowcast'?300:iconLayerSpec('precip')?.step||900;
+  return r==='radar'?300:r==='nowcast'?300:iconFrameAt('precip',state.time)?.step||iconLayerSpec('precip')?.step||900;
 }
 function onTimeChanged(){updateReadout();updateCursor();updateDays();requestMap();}
 
-/* ---------- tile service: ICON-D2 runs, history, radar, nowcast, warnings ---------- */
+/* ---------- tile service: ICON runs (D2, EU, Global), D2 history, radar, nowcast, warnings ---------- */
 function iconManifests(){return [state.icon,...(state.history?.slices||[])].filter(Boolean);}
+/** ICON-EU and ICON Global manifests, finest first (beyond ICON-D2's 48 h). */
+function coarseManifests(){return [state.models?.icon_eu,state.models?.icon_global].filter(Boolean);}
+function allManifests(){return [...iconManifests(),...coarseManifests()];}
+/** Last time any ICON model has a map frame of `layer`. */
+function iconLayerEnd(layer){return Math.max(-Infinity,...allManifests().filter(m=>!m.history).map(m=>m.layers?.[layer]?.end??-Infinity));}
 function iconLayerSpec(layer){return state.icon?.layers?.[layer]||null;}
 let historyLoading=null;
 function loadHistory(){
@@ -157,15 +163,30 @@ function loadHistory(){
   })();
   return historyLoading;
 }
-/** ICON frame for `layer` nearest to `time` on the layer's own step, from the
- * newest run covering it (older runs' slices for earlier times). */
+/** ICON frame for `layer` at `time`: ICON-D2 (newest run covering it, older
+ * runs' slices for earlier times), then ICON-EU, then ICON Global. */
 function iconFrameAt(layer,time){
-  const spec=iconLayerSpec(layer);if(!spec)return null;
-  const t=Math.round(time/spec.step)*spec.step;
-  const manifest=chooseRun(iconManifests(),layer,t);
-  if(manifest)return iconFrame(manifest,layer,t);
-  if(t<spec.start)void loadHistory();
+  const spec=iconLayerSpec(layer);
+  if(spec){
+    const t=Math.round(time/spec.step)*spec.step;
+    const manifest=chooseRun(iconManifests(),layer,t);
+    if(manifest)return iconFrame(manifest,layer,t);
+    if(t<spec.start)void loadHistory();
+  }
+  for(const m of coarseManifests()){const f=iconFrame(m,layer,time);if(f&&(!spec||time>spec.end))return f;}
   return null;
+}
+async function loadCoarseModels(ttlMs){
+  state.models??={};
+  await Promise.all(['icon_eu','icon_global'].map(async id=>{
+    try{
+      const raw=await fetchPointer(DATA_BASE+id+'/latest.json',{ttlMs});
+      if(!raw||typeof raw.manifest!=='string'||!raw.manifest.startsWith(id+'/')||raw.manifest.includes('..'))return;
+      if(state.models[id]?.run===raw.run)return;
+      state.models[id]=parseIconManifest(await fetchImmutableJSON(DATA_BASE+raw.manifest),raw.manifest);
+    }catch{/* this model stays unavailable; DWD map images cover rain beyond ICON-D2 */}
+  }));
+  requestMap();updateChip();void refreshOwnSeries();
 }
 async function loadIconRun({fresh=false}={}){
   const ttlMs=fresh?0:60_000;
@@ -178,7 +199,7 @@ async function loadIconRun({fresh=false}={}){
     if(state.icon?.dir!==dir){state.icon=parseIconManifest(await fetchImmutableJSON(DATA_BASE+latest.icon.manifest),latest.icon.manifest);
       state.iconError=null;state.history=null;}
   }catch(error){state.iconError=error.message;if(!state.icon)toast('ICON-D2 maps unavailable: '+error.message,{error:true});}
-  finally{void loadRadar(ttlMs);void loadNowcast(ttlMs);void loadWarnings(ttlMs);requestMap();updateChip();}
+  finally{void loadRadar(ttlMs);void loadNowcast(ttlMs);void loadWarnings(ttlMs);void loadCoarseModels(ttlMs);requestMap();updateChip();}
 }
 const pointerURL=(key,fallback)=>DATA_BASE+(state.latest?.[key]||fallback);
 async function loadRadar(ttlMs){
@@ -220,7 +241,7 @@ function rainSource(t){
   const nc=state.nowcast?.frames;
   if(nc?.length&&t>(r?.latest??-Infinity)+150&&t<=nc.at(-1).time+150&&t>=nc[0].time-450)return 'nowcast';
   // ICON-D2 tiles first; beyond them DWD's ICON-EU / ICON Global map images.
-  if(state.icon&&(iconFrameAt('precip',t)||t<(iconLayerSpec('precip')?.end??-Infinity)))return 'forecast';
+  if(allManifests().length&&(iconFrameAt('precip',t)||t<iconLayerEnd('precip')))return 'forecast';
   if(chooseWmsSource(wmsMetadata(),t))return 'wms';
   return 'forecast';
 }
@@ -229,7 +250,7 @@ function rainFrameAt(t){
   if(source==='radar'){const i=Math.max(0,floorFrame(state.radar.frames,t));return {source,frame:radarFrame(state.radar,state.radar.frames[i])};}
   if(source==='nowcast'){const fr=state.nowcast.frames,i=Math.max(0,floorFrame(fr,t));return {source,frame:nowcastFrame(state.nowcast,fr[i].time)};}
   if(source==='wms')return {source,frame:null,wms:chooseWmsSource(wmsMetadata(),t)};
-  return {source,frame:state.icon?iconFrameAt('precip',t):null};
+  return {source,frame:allManifests().length?iconFrameAt('precip',t):null};
 }
 
 /* ---------- point forecast (charts + readout) ---------- */
@@ -241,14 +262,14 @@ async function loadPoint(){
   state.pointLoading=true;state.pointError=null;
   const cached=(()=>{try{const c=JSON.parse(localStorage.getItem(pointCacheKey(place))||'null');
     return c&&Date.now()-c.savedAt<12*3600_000?c:null;}catch{return null;}})();
-  if(cached&&!state.point){try{state.point=attachPreviousRun(parsePointForecast(cached.main),cached.previous);}catch{/* ignore */}}
+  if(cached&&!state.point){try{setPointBase(attachPreviousRun(parsePointForecast(cached.main),cached.previous));}catch{/* ignore */}}
   requestGraphs();
   try{
     const get=async url=>{const r=await fetch(url,{signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);
       const j=await r.json();if(j?.error)throw new Error(j.reason||'forecast service error');return j;};
     const [main,previous]=await Promise.all([get(pointForecastURL(place)),get(previousRunURL(place)).catch(()=>null)]);
     if(epoch!==pointEpoch)return;
-    state.point=attachPreviousRun(parsePointForecast(main),previous);
+    setPointBase(attachPreviousRun(parsePointForecast(main),previous));
     try{localStorage.setItem(pointCacheKey(place),JSON.stringify({savedAt:Date.now(),main,previous}));}catch{/* optional */}
   }catch(error){
     if(epoch!==pointEpoch||controller.signal.aborted)return;
@@ -257,6 +278,27 @@ async function loadPoint(){
   }finally{
     if(epoch===pointEpoch){state.pointLoading=false;renderMeteo();updateReadout();}
   }
+}
+/* The graphs use OpenWetter's own ICON tiles (the same values as the map)
+ * wherever they cover an hour; Open-Meteo fills the rest (past hours, cloud
+ * by height, the previous run). */
+function setPointBase(forecast){state.pointOM=forecast;state.point=forecast;state.ownKey=null;void refreshOwnSeries();}
+let ownEpoch=0;
+async function refreshOwnSeries(){
+  const base=state.pointOM;if(!base)return;
+  const manifests=[state.icon,...coarseManifests()].filter(Boolean);if(!manifests.length)return;
+  const place={...state.place},key=placeKey(place)+'|'+manifests.map(m=>m.model+'@'+m.run).join(',');
+  if(state.ownKey===key)return;
+  const epoch=++ownEpoch;
+  const get=async url=>{
+    let bytes=await weatherDiskCache.get('series',url);
+    if(!bytes){const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);bytes=await r.arrayBuffer();void weatherDiskCache.put('series',url,bytes);}
+    return bytes;
+  };
+  const own=await loadOwnSeries(manifests,place,base.time,get);
+  if(epoch!==ownEpoch||state.pointOM!==base)return;
+  state.ownKey=key;state.point=applyOwnSeries(base,own);
+  renderMeteo();updateReadout();
 }
 /** Forecast object the charts use: the stitched series, or one model only. */
 function chartForecast(){
@@ -406,7 +448,7 @@ let shownRain=null,shownField=null;
 function renderMap(){
   const view=mapView();if(view.width<5||view.height<5)return;
   renderBaseTiles(view);
-  const fieldFrame=state.field&&state.icon?iconFrameAt(state.field,state.time):null;
+  const fieldFrame=state.field&&allManifests().length?iconFrameAt(state.field,state.time):null;
   painters.field.paint(fieldFrame,view,{scene:viewKey(view,'field:'+state.field),
     extra:state.field==='wind_direction'?(ctx,frame,v)=>drawWindArrows(ctx,renderer,frame,v):null,
     onShown:frame=>{shownField=frame;updateChip();sampleChip();schedulePrefetch(frame,view);},
@@ -444,7 +486,7 @@ function schedulePrefetch(frame,view){
   prefetchTimer=setTimeout(()=>{
     let next=null;
     if(frame.source==='icon'){
-      const manifest=iconManifests().find(m=>m.run===frame.run&&m.tile===frame.tile);
+      const manifest=allManifests().find(m=>m.run===frame.run&&m.tile===frame.tile&&(m.model||'icon_d2')===frame.model);
       if(manifest&&!manifest.history){if(frame.index>=frame.frames-6)next=iconAdjacentChunk(manifest,frame,1);else if(frame.index<=3)next=iconAdjacentChunk(manifest,frame,-1);}
     }else if(frame.source==='radar'&&state.radar){
       const i=state.radar.frames.findIndex(f=>f.time===frame.time);
@@ -519,15 +561,15 @@ function updateChip(){
     nodes.push(chipLayer('rain','Precipitation',sampled?rainText(chipValues.rain.value??0):'—',state.units.precipitation));
     const kind=frame?(frame.source==='icon'?'forecast':frame.source):null,loading=wanted.frame&&frame?.key!==wanted.frame.key?' · loading':'';
     source=kind==='radar'?{text:`Radar ${hhmm(frame.time)}${loading}`,cls:'observed'}:kind==='nowcast'?{text:`Nowcast ${hhmm(frame.time)}${loading}`,cls:'nowcast'}:
-      kind==='forecast'?{text:`ICON-D2 ${utcHour(frame.runTime)}${loading}`,cls:''}:
+      kind==='forecast'?{text:`${frame.label||'ICON-D2'} ${utcHour(frame.runTime)}${loading}`,cls:''}:
       {text:wanted.frame?'Loading…':wanted.source==='forecast'&&state.icon?'No rain map for this time':'Loading…',cls:''};
     }
   }
   if(state.field){
     const frame=shownField,sampled=chipValues.field?.key===frame?.key&&frame,[val,unit]=fieldValueText(state.field,sampled?chipValues.field.value:null);
     nodes.push(chipLayer(LAYERS[state.field].icon,LAYERS[state.field].label,val,unit));
-    const wanted=state.icon?iconFrameAt(state.field,state.time):null;
-    source??={text:frame?`ICON-D2 ${utcHour(frame.runTime)}${wanted&&wanted.key!==frame.key?' · loading':''}`:state.icon?(wanted?'Loading…':'No map for this time'):'Loading…',cls:''};
+    const wanted=allManifests().length?iconFrameAt(state.field,state.time):null;
+    source??={text:frame?`${frame.label||'ICON-D2'} ${utcHour(frame.runTime)}${wanted&&wanted.key!==frame.key?' · loading':''}`:state.icon?(wanted?'Loading…':'No map for this time'):'Loading…',cls:''};
   }
   if(!nodes.length)nodes.push(chipLayer('layers','No map layer','',''));
   if(source)nodes.push(el('span',{className:'chip-source '+source.cls,textContent:source.text}));
@@ -536,10 +578,14 @@ function updateChip(){
 /* legend card */
 function legendModel(layer){
   if(layer==='precip'||layer==='snow'){
-    // Log-scaled rain rate; ticks like Flowx (0, 1, 5, 20, 50 mm/h).
-    const stops=PALETTE_STOPS[layer==='snow'?'snow':'rain'],lo=Math.log(0.05),hi=Math.log(60),pos=v=>(Math.log(Math.max(.05,v))-lo)/(hi-lo);
+    // Rain: Flowx's legend spacing (0, 1, 5, 20, 50 mm/h); snow: log-scaled rate.
+    const lo=Math.log(0.05),hi=Math.log(60),stops=PALETTE_STOPS[layer==='snow'?'snow':'rain'];
+    const pos=layer==='snow'?v=>(Math.log(Math.max(.05,v))-lo)/(hi-lo):rainScalePosition;
     const ticks=state.units.precipitation==='in/h'?[[0,'0 in/h'],[1/25.4*25.4,'0.04'],[5,'0.2'],[20,'0.8'],[50,'2']]:[[0,'0 mm/h'],[1,'1'],[5,'5'],[20,'20'],[50,'50']];
-    return {gradient:stops.map(([v,c,a])=>[pos(v),c,a]),ticks:ticks.map(([v,l])=>[v===0?0:pos(v),l])};
+    const gradient=stops.map(([v,c,a])=>[pos(v),c,a]);
+    // Flowx starts the rain bar with a short grey "dry" segment.
+    if(layer==='precip')gradient.unshift([0,'#d6d9e0',1],[.02,'#d6d9e0',1]);
+    return {gradient,ticks:ticks.map(([v,l])=>[v===0?0:pos(v),l])};
   }
   const info=LAYER_INFO[layer],stops=PALETTE_STOPS[info.palette];if(!stops)return null;
   const v0=stops[0][0],v1=stops.at(-1)[0],pos=v=>(v-v0)/(v1-v0);
@@ -690,7 +736,7 @@ function setPlace(place,{center=true}={}){
   if(!validPlace(place))return;
   state.place={name:place.name,latitude:clampLatitude(place.latitude),longitude:wrappedLongitude(place.longitude)};
   if(center){state.map.latitude=state.place.latitude;state.map.longitude=state.place.longitude;}
-  state.point=null;placeWarnings=null;save();updateHeader();renderMeteo();updateReadout();requestMap();void loadPoint();
+  state.point=null;state.pointOM=null;placeWarnings=null;save();updateHeader();renderMeteo();updateReadout();requestMap();void loadPoint();
 }
 function updateHeader(){
   dom.placeName.textContent=state.place.name.split(',')[0]||state.place.name;
@@ -756,12 +802,13 @@ async function share(){
   try{if(navigator.share)await navigator.share({title:'OpenWetter · '+state.place.name,url:url.href});
     else{await navigator.clipboard.writeText(url.href);toast('Link copied');}}catch{/* cancelled */}
 }
-function refresh(){void loadIconRun({fresh:true});state.point=null;void loadPoint();toast('Refreshing…');}
+function refresh(){void loadIconRun({fresh:true});state.point=null;state.pointOM=null;void loadPoint();toast('Refreshing…');}
 function openInfo(){
   const f=state.point,dl=el('dl',{className:'info-grid'});
   const row=(k,v)=>dl.append(el('dt',{textContent:k}),el('dd',{textContent:v}));
   row('Place',`${state.place.name} (${state.place.latitude.toFixed(3)}, ${state.place.longitude.toFixed(3)})`);
   row('Map model',state.icon?`DWD ICON-D2 run ${dayTime(state.icon.runTime)} (${utcHour(state.icon.runTime)})`:state.iconError||'loading…');
+  for(const m of coarseManifests())row('Later days',`DWD ${m.label} run ${dayTime(m.runTime)} (${utcHour(m.runTime)})`);
   row('Radar',state.radar?`observed until ${dayTime(state.radar.latest)} · DWD RADOLAN`:'unavailable');
   row('Nowcast',state.nowcast?`issued ${dayTime(state.nowcast.issued)} · DWD RADVOR, next 2 h`:'unavailable');
   row('Warnings',state.warnings?`${state.warnings.warnings.length} active or upcoming · DWD`:'unavailable');

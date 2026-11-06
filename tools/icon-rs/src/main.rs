@@ -1,7 +1,8 @@
 //! OpenWetter publisher: DWD open data -> compact 8-bit WebP tiles and JSON on Cloudflare R2.
 //!
 //! Subcommands (each takes `--out DIR` for a local dry run or `--publish` for R2, plus `--state FILE`):
-//!   icon      ICON-D2 map layers, chart series and 5-day run history (every DWD run)
+//!   icon      ICON map layers and chart series: --model icon_d2 (default; plus 5-day history),
+//!             icon_eu or icon_global (cropped to Germany and neighbours)
 //!   radar     observed RADOLAN RY radar, last two days (every 5 minutes)
 //!   nowcast   RADVOR RV 2-hour radar nowcast (every 5 minutes)
 //!   warnings  official DWD CAP warnings (every 5 minutes)
