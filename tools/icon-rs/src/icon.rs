@@ -211,27 +211,110 @@ struct Job {
     hourly: bool,
     accumulated: bool,
     layers: &'static [Layer],
+    /// Only for this model (None = every model).
+    only: Option<&'static str>,
+    /// Chart series only, no map tiles (cloud cover on pressure levels).
+    series_only: bool,
+}
+
+/// One ICON-EU pressure level of cloud cover, for the graphs' cloud layers.
+macro_rules! cloud_level {
+    ($pa:literal, $name:literal) => {
+        Job {
+            fields: &[concat!("CLC/lvt1/100/lv1/", $pa)],
+            hourly: true,
+            accumulated: false,
+            layers: &[Layer { name: $name, code: Code::Percent }],
+            only: Some("icon_eu"),
+            series_only: true,
+        }
+    };
+}
+
+/// The jobs a model publishes.
+fn jobs(model: &Model) -> impl Iterator<Item = &'static Job> + '_ {
+    JOBS.iter().filter(move |j| j.only.is_none_or(|m| m == model.id))
 }
 
 const JOBS: &[Job] = &[
-    Job { fields: &["TOT_PREC"], hourly: false, accumulated: true, layers: &[Layer { name: "precip", code: Code::LogRate }] },
-    Job { fields: &["SNOW_GSP", "SNOW_CON"], hourly: false, accumulated: true, layers: &[Layer { name: "snow", code: Code::LogRate }] },
-    Job { fields: &["CLCT"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_total", code: Code::Percent }] },
-    Job { fields: &["CLCL"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_low", code: Code::Percent }] },
-    Job { fields: &["CLCM"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_mid", code: Code::Percent }] },
-    Job { fields: &["CLCH"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_high", code: Code::Percent }] },
-    Job { fields: &["T_2M"], hourly: true, accumulated: false, layers: &[Layer { name: "temperature", code: Code::TempC }] },
-    Job { fields: &["TD_2M"], hourly: true, accumulated: false, layers: &[Layer { name: "dew_point", code: Code::TempC }] },
-    Job { fields: &["RELHUM_2M"], hourly: true, accumulated: false, layers: &[Layer { name: "humidity", code: Code::Percent }] },
-    Job { fields: &["PMSL"], hourly: true, accumulated: false, layers: &[Layer { name: "pressure", code: Code::Pressure }] },
+    Job { fields: &["TOT_PREC"], hourly: false, accumulated: true, layers: &[Layer { name: "precip", code: Code::LogRate }], only: None, series_only: false },
+    Job { fields: &["SNOW_GSP", "SNOW_CON"], hourly: false, accumulated: true, layers: &[Layer { name: "snow", code: Code::LogRate }], only: None, series_only: false },
+    Job { fields: &["CLCT"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_total", code: Code::Percent }], only: None, series_only: false },
+    Job { fields: &["CLCL"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_low", code: Code::Percent }], only: None, series_only: false },
+    Job { fields: &["CLCM"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_mid", code: Code::Percent }], only: None, series_only: false },
+    Job { fields: &["CLCH"], hourly: true, accumulated: false, layers: &[Layer { name: "cloud_high", code: Code::Percent }], only: None, series_only: false },
+    Job { fields: &["T_2M"], hourly: true, accumulated: false, layers: &[Layer { name: "temperature", code: Code::TempC }], only: None, series_only: false },
+    Job { fields: &["TD_2M"], hourly: true, accumulated: false, layers: &[Layer { name: "dew_point", code: Code::TempC }], only: None, series_only: false },
+    Job { fields: &["RELHUM_2M"], hourly: true, accumulated: false, layers: &[Layer { name: "humidity", code: Code::Percent }], only: None, series_only: false },
+    Job { fields: &["PMSL"], hourly: true, accumulated: false, layers: &[Layer { name: "pressure", code: Code::Pressure }], only: None, series_only: false },
     Job {
         fields: &["U_10M", "V_10M"],
         hourly: true,
         accumulated: false,
         layers: &[Layer { name: "wind_speed", code: Code::Speed }, Layer { name: "wind_direction", code: Code::Direction }],
+        only: None,
+        series_only: false,
     },
-    Job { fields: &["VMAX_10M"], hourly: true, accumulated: false, layers: &[Layer { name: "wind_gust", code: Code::Speed }] },
+    Job { fields: &["VMAX_10M"], hourly: true, accumulated: false, layers: &[Layer { name: "wind_gust", code: Code::Speed }], only: None, series_only: false },
+    // ICON-EU cloud cover on pressure levels (the levels DWD publishes that the graphs draw).
+    cloud_level!("100000", "cloud_1000hPa"),
+    cloud_level!("95000", "cloud_950hPa"),
+    cloud_level!("92500", "cloud_925hPa"),
+    cloud_level!("90000", "cloud_900hPa"),
+    cloud_level!("85000", "cloud_850hPa"),
+    cloud_level!("80000", "cloud_800hPa"),
+    cloud_level!("70000", "cloud_700hPa"),
+    cloud_level!("60000", "cloud_600hPa"),
+    cloud_level!("50000", "cloud_500hPa"),
+    cloud_level!("40000", "cloud_400hPa"),
+    cloud_level!("30000", "cloud_300hPa"),
+    cloud_level!("25000", "cloud_250hPa"),
+    cloud_level!("20000", "cloud_200hPa"),
 ];
+
+/// Radar, nowcast and warnings updates run from inside a long publish. They share one lock
+/// with it (the server has memory for one job at a time), so the separate 5-minute live job
+/// would otherwise wait for the whole publish. Caps as in openwetter-live.service.
+struct LiveTicks {
+    dir: Option<PathBuf>,
+    sink_args: Vec<String>,
+    last: Instant,
+    every: Duration,
+}
+
+impl LiveTicks {
+    fn from_args(args: &[String]) -> LiveTicks {
+        let sink_args = match arg(args, "--out") {
+            Some(out) if !flag(args, "--publish") => vec!["--out".to_owned(), out],
+            _ => vec!["--publish".to_owned()],
+        };
+        let every = arg(args, "--live-every").and_then(|v| v.parse().ok()).unwrap_or(300);
+        LiveTicks { dir: arg(args, "--live-dir").map(PathBuf::from), sink_args, last: Instant::now(), every: Duration::from_secs(every) }
+    }
+
+    /// Run the live jobs if `--live-every` seconds (default 300) have passed since the publish
+    /// started or they last ran.
+    fn tick(&mut self) {
+        let Some(dir) = &self.dir else { return };
+        if self.last.elapsed() < self.every {
+            return;
+        }
+        self.last = Instant::now();
+        type Job = fn(&[String]) -> Res<()>;
+        let live: [(&str, Job, &str); 3] = [
+            ("radar", crate::radar::run_radar, "150000"),
+            ("nowcast", crate::radar::run_nowcast, "100000"),
+            ("warnings", crate::warnings::run, "30000"),
+        ];
+        for (name, job, cap) in live {
+            let mut a = self.sink_args.clone();
+            a.extend(["--state".to_owned(), dir.join(format!("{name}.json")).display().to_string(), "--max-uploads-month".to_owned(), cap.to_owned()]);
+            if let Err(e) = job(&a) {
+                eprintln!("live {name} during publish: {e}");
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 struct Timer {
@@ -288,6 +371,7 @@ pub fn run(args: &[String]) -> Res<()> {
     let sink = Sink::from_args(flag(args, "--publish"), arg(args, "--out"))?;
     let agent = agent();
     let model = Model::find(&arg(args, "--model").unwrap_or_else(|| "icon_d2".into()))?;
+    let mut live = LiveTicks::from_args(args);
     let label = model.label;
 
     let mut state = State::load(&state_path, json!({"runs": [], "history": [], "month": "", "uploads": 0}))?;
@@ -308,7 +392,7 @@ pub fn run(args: &[String]) -> Res<()> {
     let run_key = run.replace(':', "");
     let run_enc = run.replace(':', "%3A");
     let run_start = parse_iso(&format!("{run}:00")).ok_or("bad run time")?;
-    println!("{label} run {run}: publishing {} layer groups and chart series{}", JOBS.len(), if model.history { " and history slice" } else { "" });
+    println!("{label} run {run}: publishing {} layer groups and chart series{}", jobs(model).count(), if model.history { " and history slice" } else { "" });
     let started = Instant::now();
     let mut t = Timer::default();
 
@@ -326,7 +410,7 @@ pub fn run(args: &[String]) -> Res<()> {
     // Global frame offsets of each layer inside a chart series block.
     let mut series_layers = Vec::new();
     let mut total_frames = 0;
-    for job in JOBS {
+    for job in jobs(model) {
         for layer in job.layers {
             let (leads, steps) = model.frames(job);
             let n = leads.len();
@@ -342,9 +426,10 @@ pub fn run(args: &[String]) -> Res<()> {
     let mut layers_manifest = Map::new();
     let mut bytes_total = 0usize;
     let mut layer_offset = 0;
-    for job in JOBS {
+    for job in jobs(model) {
         let (b, entries) = publish_job(model, job, &agent, &sink, &grid, &run_enc, &run_key, &mut state, max_uploads, &mut keys, &series, layer_offset, &mut slice, &mut t)?;
         layer_offset += job.layers.len() * model.frames(job).0.len();
+        live.tick();
         bytes_total += b;
         for (name, entry) in entries {
             layers_manifest.insert(name, entry);
@@ -387,6 +472,12 @@ pub fn run(args: &[String]) -> Res<()> {
     state.count_uploads(batch.len() as u64, max_uploads)?;
     sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
     series_keys.extend(batch.drain(..).map(|(k, _)| k));
+    if model.history {
+        // History series: the first 3 hours of every layer, in 64 x 64-cell blocks (a quarter
+        // of the objects), so the graphs can show the past day from the same model.
+        let (n, bytes) = history_series(model, &grid, &series, &series_layers, &run_key, &sink, &mut state, max_uploads, &mut slice)?;
+        println!("history series: {n} blocks, {:.1} MB", bytes as f64 / 1e6);
+    }
     drop(series); // closing the unlinked scratch file frees its disk space
     t.upload += s.elapsed();
     println!("chart series: {} blocks, {:.1} MB, {:.0} s so far", series_tiles.len(), series_bytes as f64 / 1e6, started.elapsed().as_secs_f64());
@@ -416,13 +507,17 @@ pub fn run(args: &[String]) -> Res<()> {
     if model.history {
         let mut history: Vec<Value> = state.v["history"].as_array().cloned().unwrap_or_default();
         history.retain(|h| h["run"] != run.as_str());
-        history.push(json!({"run": run, "run_key": run_key, "start": run_start, "keys": slice.keys, "layers": slice.layers}));
+        history.push(json!({"run": run, "run_key": run_key, "start": run_start, "keys": slice.keys, "layers": slice.layers,
+                            "series": {"tiles": slice.series_tiles, "layers": slice.series_layers}}));
         history.sort_by_key(|h| h["start"].as_i64());
         state.v["history"] = json!(history);
         write_history_index(&sink, &mut state, max_uploads)?;
     }
     let newest = runs.last().and_then(|r| r["run"].as_str()).unwrap_or(&run).to_owned();
-    let pointer = json!({"run": newest, "manifest": format!("{}/{}/manifest.json", model.id, newest.replace(':', ""))});
+    let mut pointer = json!({"run": newest, "manifest": format!("{}/{}/manifest.json", model.id, newest.replace(':', ""))});
+    if let Some(prev) = previous_pointer(model, &runs, &newest) {
+        pointer["previous"] = prev;
+    }
     state.count_uploads(1, max_uploads)?;
     if model.id == "icon_d2" {
         let mut d2 = pointer;
@@ -458,6 +553,86 @@ struct Slice {
     keys: Vec<String>,
     layers: Map<String, Value>,
     bytes: usize,
+    /// History series blocks [x, y] and their layers.
+    series_tiles: Vec<Value>,
+    series_layers: Vec<Value>,
+}
+
+const HISTORY_SERIES: usize = 64;
+
+/// Write the first HISTORY_MINUTES of every layer per 64 x 64-cell block, assembled from the
+/// 32 x 32 blocks of the scratch file. Returns (blocks, bytes).
+#[allow(clippy::too_many_arguments)]
+fn history_series(
+    model: &Model,
+    grid: &Grid,
+    series: &SeriesFile,
+    series_layers: &[Value],
+    run_key: &str,
+    sink: &Sink,
+    state: &mut State,
+    max_uploads: u64,
+    slice: &mut Slice,
+) -> Res<(usize, usize)> {
+    // (global frame offset, frames kept) per layer
+    let mut offset = 0;
+    let mut parts = Vec::new();
+    for l in series_layers {
+        let leads: Vec<u64> = l["lead_minutes"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+        let n = leads.iter().filter(|&&m| m <= HISTORY_MINUTES as u64).count();
+        parts.push((offset, n));
+        slice.series_layers.push(json!({"name": l["name"], "frames": n, "step_minutes": l["step_minutes"], "first_step_minutes": l["first_step_minutes"]}));
+        offset += leads.len();
+    }
+    let (width, height) = (grid.width, grid.height);
+    let mut frame = vec![0u8; SeriesFile::BLOCK];
+    let (mut batch, mut count, mut bytes) = (Vec::new(), 0, 0);
+    for hy in 0..height.div_ceil(HISTORY_SERIES) {
+        for hx in 0..width.div_ceil(HISTORY_SERIES) {
+            let (x0, y0) = (hx * HISTORY_SERIES, hy * HISTORY_SERIES);
+            let (w, h) = (HISTORY_SERIES.min(width - x0), HISTORY_SERIES.min(height - y0));
+            let mut body = Vec::with_capacity(parts.iter().map(|p| p.1).sum::<usize>() * w * h);
+            for &(off, n) in &parts {
+                for f in 0..n {
+                    let start = body.len();
+                    body.resize(start + w * h, NODATA);
+                    // Copy from each 32-block overlapping this 64-block.
+                    for sy in y0 / SERIES..(y0 + h).div_ceil(SERIES) {
+                        for sx in x0 / SERIES..(x0 + w).div_ceil(SERIES) {
+                            let (sw, sh) = (SERIES.min(width - sx * SERIES), SERIES.min(height - sy * SERIES));
+                            let b = sy * series.bx + sx;
+                            series.file.read_exact_at(&mut frame, ((b * series.total_frames + off + f) * SeriesFile::BLOCK) as u64)?;
+                            for r in 0..sh {
+                                let gy = sy * SERIES + r;
+                                let dst = start + (gy - y0) * w + (sx * SERIES - x0);
+                                body[dst..dst + sw].copy_from_slice(&frame[r * sw..r * sw + sw]);
+                            }
+                        }
+                    }
+                }
+            }
+            if body.iter().all(|&v| v == NODATA) {
+                continue;
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+            gz.write_all(&body)?;
+            let gz = gz.finish()?;
+            bytes += gz.len();
+            count += 1;
+            slice.series_tiles.push(json!([hx, hy]));
+            batch.push((format!("{}/history/{run_key}/series/{hx}_{hy}.bin.gz", model.id), gz));
+            if batch.len() >= 64 {
+                state.count_uploads(batch.len() as u64, max_uploads)?;
+                sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
+                slice.keys.extend(batch.drain(..).map(|(k, _)| k));
+            }
+        }
+    }
+    state.count_uploads(batch.len() as u64, max_uploads)?;
+    sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
+    slice.keys.extend(batch.drain(..).map(|(k, _)| k));
+    slice.bytes += bytes;
+    Ok((count, bytes))
 }
 
 /// Every object key the state references under the model's prefix.
@@ -473,21 +648,47 @@ fn referenced_keys(state: &State, model: &Model) -> std::collections::HashSet<St
 
 /// Delete superseded runs once their successor has been live for the grace period, and history
 /// slices older than `history_days`. Returns the number of deleted objects.
+/// How long a replaced run's chart series is kept (the "previous day's forecast" comparison).
+const PREVIOUS_SECONDS: i64 = 24 * 3600;
+
+/// Pointer to the run started 24 hours before `newest`, if its series is still kept.
+fn previous_pointer(model: &Model, runs: &[Value], newest: &str) -> Option<Value> {
+    let want = parse_iso(&format!("{newest}:00"))? - PREVIOUS_SECONDS;
+    let prev = runs.iter().find(|r| run_start_of(r) == Some(want) && r["series_keys"].as_array().is_some_and(|k| !k.is_empty()))?;
+    let run = prev["run"].as_str()?;
+    Some(json!({"run": run, "manifest": format!("{}/{}/manifest.json", model.id, run.replace(':', ""))}))
+}
+
+fn run_start_of(r: &Value) -> Option<i64> {
+    r["run"].as_str().and_then(|run| parse_iso(&format!("{run}:00")))
+}
+
 fn housekeeping(sink: &Sink, state: &mut State, grace_minutes: i64, history_days: i64) -> Res<usize> {
     let now = unix_now();
     let mut runs: Vec<Value> = state.v["runs"].as_array().cloned().unwrap_or_default();
     runs.sort_by(|a, b| a["run"].as_str().cmp(&b["run"].as_str()));
     let mut doomed: Vec<String> = Vec::new();
     let successors: Vec<i64> = runs.iter().skip(1).map(|r| r["published_at"].as_i64().unwrap_or(0)).collect();
+    let newest_start = runs.last().and_then(run_start_of);
     let mut kept = Vec::new();
-    for (i, r) in runs.into_iter().enumerate() {
+    for (i, mut r) in runs.into_iter().enumerate() {
         let superseded = successors.get(i).is_some_and(|&p| now - p >= grace_minutes * 60);
-        if superseded {
-            for list in [&r["keys"], &r["series_keys"]] {
-                doomed.extend(list.as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_owned)));
-            }
-        } else {
+        if !superseded {
             kept.push(r);
+            continue;
+        }
+        // A replaced run's chart series and manifest stay until it is a day older than the
+        // newest run: the graphs compare with the forecast made 24 hours earlier.
+        let keep_series = matches!((newest_start, run_start_of(&r)), (Some(n), Some(s)) if n - s <= PREVIOUS_SECONDS);
+        let keys: Vec<String> = r["keys"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_owned)).collect();
+        if keep_series {
+            let (manifest, tiles): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| k.ends_with("/manifest.json"));
+            doomed.extend(tiles);
+            r["keys"] = json!(manifest);
+            kept.push(r);
+        } else {
+            doomed.extend(keys);
+            doomed.extend(r["series_keys"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_owned)));
         }
     }
     let mut history: Vec<Value> = state.v["history"].as_array().cloned().unwrap_or_default();
@@ -513,13 +714,13 @@ fn housekeeping(sink: &Sink, state: &mut State, grace_minutes: i64, history_days
 }
 
 fn write_history_index(sink: &Sink, state: &mut State, max_uploads: u64) -> Res<()> {
-    let codes: Map<String, Value> = JOBS.iter().flat_map(|j| j.layers.iter()).map(|l| (l.name.to_owned(), l.code.describe())).collect();
+    let codes: Map<String, Value> = JOBS.iter().filter(|j| j.only.is_none()).flat_map(|j| j.layers.iter()).map(|l| (l.name.to_owned(), l.code.describe())).collect();
     let slices: Vec<Value> = state.v["history"]
         .as_array()
         .into_iter()
         .flatten()
         .rev()
-        .map(|h| json!({"run": h["run"], "run_key": h["run_key"], "start": h["start"], "layers": h["layers"]}))
+        .map(|h| json!({"run": h["run"], "run_key": h["run_key"], "start": h["start"], "layers": h["layers"], "series": h["series"]}))
         .collect();
     let index = json!({
         "schema": "openwetter-history-1",
@@ -528,6 +729,8 @@ fn write_history_index(sink: &Sink, state: &mut State, max_uploads: u64) -> Res<
         "path": "icon_d2/history/{run_key}/{layer}/{x}_{y}.webp",
         "encoding": "lossless WebP, grey (R=G=B), frames stacked top to bottom; per layer: frames from first_step_minutes after the run, every step_minutes; codes as in the run manifest",
         "codes": codes, "slices": slices,
+        "series": {"tile": HISTORY_SERIES, "path": "icon_d2/history/{run_key}/series/{x}_{y}.bin.gz",
+                   "encoding": "gzip; for each layer of the slice in order: frames x h x w uint8 codes (as in the run manifest), rows north to south; w, h smaller at the east/south edge"},
     });
     if max_uploads != u64::MAX {
         state.count_uploads(1, max_uploads)?;
@@ -608,6 +811,9 @@ fn publish_job(
             }
         }
 
+        if job.series_only {
+            continue; // chart series only: no map tiles, no history slice
+        }
         if chunk == 0 && model.history {
             // History slice: the first 3 hours of each layer, in larger tiles (few objects per run).
             let n = HISTORY_MINUTES / step_minutes;
@@ -664,6 +870,9 @@ fn publish_job(
         }
     }
 
+    if job.series_only {
+        return Ok((0, Vec::new()));
+    }
     let entries = job
         .layers
         .iter()
@@ -711,7 +920,7 @@ fn latest_complete_run(agent: &ureq::Agent, model: &Model) -> Res<String> {
     runs.sort();
     'runs: for run in runs.iter().rev() {
         let enc = run.replace(':', "%3A");
-        for field in JOBS.iter().flat_map(|j| j.fields.iter()).chain(["CLAT", "CLON"].iter()) {
+        for field in jobs(model).flat_map(|j| j.fields.iter()).chain(["CLAT", "CLON"].iter()) {
             let lead = if *field == "CLAT" || *field == "CLON" { 0 } else { model.last_lead() };
             if agent.head(&model.field_url(&enc, field, lead)).call()?.status() != 200 {
                 continue 'runs;
@@ -837,7 +1046,7 @@ mod tests {
     use super::*;
 
     fn job(hourly: bool) -> Job {
-        Job { fields: &["X"], hourly, accumulated: true, layers: &[] }
+        Job { fields: &["X"], hourly, accumulated: true, layers: &[], only: None, series_only: false }
     }
 
     #[test]
@@ -873,6 +1082,37 @@ mod tests {
         assert_eq!(leads[0] - steps[0], 108 * 60);
         assert_eq!(g.field_url("r", "TOT_PREC", 111 * 60), "https://opendata.dwd.de/weather/nwp/v1/m/icon/p/TOT_PREC/r/r/s/PT111H00M.grib2");
         assert!(Model::find("gfs").is_err());
+    }
+
+    #[test]
+    fn replaced_runs_keep_series_and_manifest_for_a_day_and_the_pointer_names_the_run_24_hours_older() {
+        let dir = std::env::temp_dir().join(format!("ow-hk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let sink = Sink::from_args(false, Some(dir.join("out").display().to_string())).unwrap();
+        let run = |h: u32| format!("2026-11-{:02}T{:02}:00", 5 + h / 24, h % 24);
+        // Runs every 3 h over 30 h, all published long ago (grace passed).
+        let runs: Vec<Value> = (0..=10).map(|i| {
+            let r = run(i * 3);
+            let k = r.replace(':', "");
+            json!({"run": r, "keys": [format!("icon_d2/{k}/manifest.json"), format!("icon_d2/{k}/precip/c00/0_0.webp")],
+                   "series_keys": [format!("icon_d2/{k}/series/0_0.bin.gz")], "published_at": 0})
+        }).collect();
+        let state_path = dir.join("state.json");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&state_path, serde_json::to_vec(&json!({"runs": runs, "history": []})).unwrap()).unwrap();
+        let mut state = State::load(&state_path, json!({})).unwrap();
+        housekeeping(&sink, &mut state, 30, 5).unwrap();
+        let kept: Vec<(String, usize, usize)> = state.v["runs"].as_array().unwrap().iter()
+            .map(|r| (r["run"].as_str().unwrap().to_owned(), r["keys"].as_array().unwrap().len(), r["series_keys"].as_array().unwrap().len())).collect();
+        // Newest 30 h; kept: runs at most 24 h older (from 6 h), tiles dropped except the newest.
+        assert_eq!(kept.first().unwrap(), &(run(6), 1, 1), "24 h older: manifest + series only");
+        assert_eq!(kept.last().unwrap(), &(run(30), 2, 1), "newest untouched");
+        assert_eq!(kept.len(), 9, "runs 0 h and 3 h are deleted");
+        let d2 = Model::find("icon_d2").unwrap();
+        let p = previous_pointer(d2, state.v["runs"].as_array().unwrap(), &run(30)).unwrap();
+        assert_eq!(p["manifest"], json!("icon_d2/2026-11-05T0600/manifest.json"));
+        assert!(previous_pointer(d2, state.v["runs"].as_array().unwrap(), &run(27)).is_none(), "the run 24 h before 27 h (3 h) was deleted");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

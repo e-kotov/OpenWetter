@@ -47,3 +47,20 @@ test('Own values replace Open-Meteo hours, finest model first; transitions follo
   const past=applyOwnSeries(om,[{model:'icon_d2',hourly:{temperature_2m:[null,null,1,null]}},{model:'icon_eu',hourly:{temperature_2m:[2,2,2,2]}}]);
   assert.deepEqual(past.series.temperature_2m,[10,10,1,2],'before own ICON-D2 starts, Open-Meteo stays');
 });
+test('Cloud by height: ICON-EU levels in every own hour they cover, else the hour\'s low/mid/high bands; previous run replaces',()=>{
+  const time=[0,1,2].map(h=>run+h*3600),lv=k=>`cloud_cover_${k}hPa`;
+  const om={time,series:{temperature_2m:[9,9,9],[lv(850)]:[50,50,50],[lv(300)]:[50,50,50],previous_temperature_2m:[7,7,7]},
+    models:{},source:['icon_d2','icon_d2','icon_eu'],transitions:[]};
+  const f=applyOwnSeries(om,[
+    {model:'icon_d2',hourly:{temperature_2m:[1,1,null]}},
+    {model:'icon_eu',hourly:{temperature_2m:[2,2,null],[lv(850)]:[10,20,null],[lv(300)]:[0,5,null]}},
+    {model:'icon_global',hourly:{temperature_2m:[3,3,3],cloud_cover_low:[60,60,60],cloud_cover_mid:[70,70,70],cloud_cover_high:[80,80,80]}}],
+    [{model:'icon_d2',hourly:{temperature_2m:[0.5,null,null]}}]);
+  assert.deepEqual(f.series[lv(850)],[10,20,60],'D2 hours take ICON-EU levels; the Global hour uses low cover (below 800 hPa)');
+  assert.deepEqual(f.series[lv(300)],[0,5,80],'above 400 hPa: high cover');
+  assert.deepEqual(f.series.previous_temperature_2m,[0.5,null,null],'own previous run, nothing where it has no value');
+});
+test('History slices fill the past hours of the ICON-D2 series',async()=>{
+  const {mergeHourly}=await import('../own-series.mjs');
+  assert.deepEqual(mergeHourly([{t:[null,null,3,4]},{t:[1,2,9,null]},{t:[0,null,null,null]}]),{t:[1,2,3,4]});
+});

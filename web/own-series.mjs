@@ -1,12 +1,15 @@
 /* Point series from OpenWetter's own ICON tiles, so the graphs show the same
  * model values as the map. The publisher writes one gzip block per 32 x 32
  * grid cells with every layer and frame (the same 8-bit codes as the map
- * tiles). Here one place's values are read and turned into the hourly shape
- * of the Open-Meteo forecast: rain and snow as the amount of the preceding
- * hour, other values interpolated to the hour. Pure logic apart from
- * `loadOwnSeries`.
+ * tiles); ICON-D2 history slices add the first hours of earlier runs (64-cell
+ * blocks) for the past, and replaced runs are kept for a day for the
+ * comparison with the previous day's forecast. ICON-EU adds cloud cover on
+ * pressure levels. Here one place's values are read and turned into the
+ * hourly shape of the Open-Meteo forecast: rain and snow as the amount of
+ * the preceding hour, other values interpolated to the hour. Pure logic
+ * apart from `loadOwnSeries`.
  */
-import {cellAt,decodeCode} from './tile-service.mjs';
+import {cellAt,decodeCode,LAYER_INFO} from './tile-service.mjs';
 
 /** Tile layer -> forecast series key (Open-Meteo names, as the graphs use). */
 export const SERIES_KEYS=Object.freeze({precip:'precipitation',snow:'snowfall',cloud_total:'cloud_cover',
@@ -16,15 +19,19 @@ export const SERIES_KEYS=Object.freeze({precip:'precipitation',snow:'snowfall',c
 // Units as Open-Meteo: km/h for wind; snowfall in cm from mm of water (Open-Meteo's factor 0.7).
 const CONVERT={wind_speed:v=>v*3.6,wind_gust:v=>v*3.6,snow:v=>v*0.7};
 const AMOUNTS=new Set(['precip','snow']);
+const LEVEL=/^cloud_(\d+)hPa$/;
+const seriesKey=name=>SERIES_KEYS[name]??(LEVEL.test(name)?'cloud_cover_'+name.slice(6):null);
+const decode=(name,code)=>LAYER_INFO[name]?decodeCode(name,code):LEVEL.test(name)&&code<=100?code:null;
+const LEVEL_KEY=/^cloud_cover_(\d+)hPa$/;
 
 /** The series block holding a place, and the place's offset inside it. */
 export function seriesBlock(manifest,lat,lon){
-  const s=manifest?.series;if(!s||!manifest.dir)return null;
+  const s=manifest?.series;if(!s?.url)return null;
   const cell=cellAt(manifest.grid,lat,lon);if(!cell)return null;
   const bx=Math.floor(cell.col/s.tile),by=Math.floor(cell.row/s.tile);
   if(!s.tiles.has(bx+'_'+by))return null;
   const w=Math.min(s.tile,manifest.grid.width-bx*s.tile),h=Math.min(s.tile,manifest.grid.height-by*s.tile);
-  return {url:manifest.dir+s.path.replace('{x}',bx).replace('{y}',by),offset:(cell.row-by*s.tile)*w+(cell.col-bx*s.tile),w,h};
+  return {url:s.url(bx,by),offset:(cell.row-by*s.tile)*w+(cell.col-bx*s.tile),w,h};
 }
 /** One place's values per layer from an uncompressed block: times, values
  * (physical units as the graphs use) and the seconds each frame covers. */
@@ -35,7 +42,7 @@ export function readPointSeries(manifest,bytes,block){
   for(const l of s.layers){
     const values=new Array(l.frames);
     for(let f=0;f<l.frames;f++){
-      const v=decodeCode(l.name,bytes[o+f*plane+block.offset]);
+      const v=decode(l.name,bytes[o+f*plane+block.offset]);
       values[f]=v==null?null:CONVERT[l.name]?CONVERT[l.name](v):v;
     }
     o+=l.frames*plane;
@@ -70,28 +77,60 @@ function instant(L,T,angle){
 export function toHourly(layers,hours){
   const out={};
   for(const [name,L] of Object.entries(layers)){
-    const key=SERIES_KEYS[name];if(!key)continue;
+    const key=seriesKey(name);if(!key)continue;
     out[key]=hours.map(T=>AMOUNTS.has(name)?amount(L,T-3600,T):instant(L,T,name==='wind_direction'));
+  }
+  // DWD publishes no 975 hPa level; the graphs draw it between 1000 and 950 hPa.
+  if(out.cloud_cover_1000hPa&&out.cloud_cover_950hPa)
+    out.cloud_cover_975hPa=out.cloud_cover_1000hPa.map((a,i)=>{const b=out.cloud_cover_950hPa[i];return a==null||b==null?null:(a+b)/2;});
+  return out;
+}
+/** One hourly series per key from several sources of the same model (e.g. a
+ * run and the history slices of earlier runs), first non-null wins. */
+export function mergeHourly(list){
+  const out={};
+  for(const h of list)for(const [k,v] of Object.entries(h)){
+    if(!out[k]){out[k]=[...v];continue;}
+    v.forEach((x,i)=>{if(out[k][i]==null&&x!=null)out[k][i]=x;});
   }
   return out;
 }
+/** Cloud cover on a pressure level from ICON's low (below 800 hPa), mid
+ * (800-400 hPa) and high (above 400 hPa) cover, where no levels are published. */
+function bandCover(h,i,p){
+  const v=(p>800?h.cloud_cover_low:p>400?h.cloud_cover_mid:h.cloud_cover_high)?.[i];
+  return v??null;
+}
 /** Replace the forecast's values with own-model ones where they exist, finest
- * model first (list order). Hours without own data (the past, beyond the
- * last run, hours before the finest own model starts) keep the Open-Meteo
- * values; variables the tiles lack (cloud by height) too. Returns a new forecast; `own[i]` marks the replaced hours. */
-export function applyOwnSeries(forecast,list){
+ * model first (list order). Hours without own data (beyond the last run, or
+ * before the finest own model starts) keep the Open-Meteo values. Cloud by
+ * height comes from ICON-EU's pressure levels for every own hour they cover,
+ * otherwise from the hour's own low/mid/high cover. `previous` (same shape,
+ * runs from 24 hours earlier) replaces the previous-run temperature.
+ * Returns a new forecast; `own[i]` marks the replaced hours. */
+export function applyOwnSeries(forecast,list,previous=[]){
   if(!forecast||!list?.length)return forecast;
   const n=forecast.time.length,series={...forecast.series},models={...forecast.models};
   for(const k of Object.keys(series))series[k]=[...series[k]];
+  const levelKeys=Object.keys(series).filter(k=>LEVEL_KEY.test(k));
   const source=[...forecast.source],own=Array(n).fill(null);
-  // Before the finest own model starts (the past), coarser own runs would
-  // replace finer Open-Meteo hours; keep those as they are.
+  // Before the finest own model starts, coarser own runs would replace finer
+  // Open-Meteo hours; keep those as they are.
   const start=list[0].hourly.temperature_2m?.findIndex(v=>v!=null)??-1;
   for(let i=Math.max(0,start);i<n;i++){
     const m=list.find(x=>x.hourly.temperature_2m?.[i]!=null);
     if(!m)continue;
     own[i]=m.model;source[i]=m.model;
-    for(const [k,v] of Object.entries(m.hourly)){if(v[i]==null)continue;(series[k]??=Array(n).fill(null))[i]=v[i];}
+    for(const [k,v] of Object.entries(m.hourly)){if(v[i]==null||LEVEL_KEY.test(k))continue;(series[k]??=Array(n).fill(null))[i]=v[i];}
+    const levels=list.find(x=>levelKeys.some(k=>x.hourly[k]?.[i]!=null));
+    for(const k of levelKeys){
+      const v=levels?levels.hourly[k]?.[i]:bandCover(m.hourly,i,Number(LEVEL_KEY.exec(k)[1]));
+      if(v!=null)series[k][i]=v; // neither levels nor bands: Open-Meteo's value stays
+    }
+    if(previous.length){
+      const prev=previous.find(x=>x.hourly.temperature_2m?.[i]!=null);
+      (series.previous_temperature_2m??=Array(n).fill(null))[i]=prev?prev.hourly.temperature_2m[i]:null;
+    }
   }
   for(const m of list){
     const base=models[m.model]?{...models[m.model]}:{};
@@ -108,16 +147,20 @@ async function gunzip(buffer){
   const stream=new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
-/** Own hourly series of every manifest (finest first) for a place. `get`
- * fetches an immutable URL as an ArrayBuffer (cached by the caller). */
-export async function loadOwnSeries(manifests,place,hours,get){
+/** Hourly series of one manifest for a place, or null. `get` fetches an
+ * immutable URL as an ArrayBuffer (cached by the caller). */
+export async function manifestHourly(m,place,hours,get){
+  const block=seriesBlock(m,place.latitude,place.longitude);if(!block)return null;
+  try{return toHourly(readPointSeries(m,await gunzip(await get(block.url)),block),hours);}
+  catch{return null;}
+}
+/** Own hourly series per model, finest first. `groups` lists, per model,
+ * the manifests to merge (a run first, then history slices). */
+export async function loadOwnSeries(groups,place,hours,get){
   const out=[];
-  for(const m of manifests){
-    const block=seriesBlock(m,place.latitude,place.longitude);if(!block)continue;
-    try{
-      const bytes=await gunzip(await get(block.url));
-      out.push({model:m.model||'icon_d2',run:m.run,hourly:toHourly(readPointSeries(m,bytes,block),hours)});
-    }catch{/* this model falls back to Open-Meteo */}
+  for(const {model,manifests} of groups){
+    const parts=(await Promise.all(manifests.map(m=>manifestHourly(m,place,hours,get)))).filter(Boolean);
+    if(parts.length)out.push({model,hourly:mergeHourly(parts)});
   }
   return out;
 }

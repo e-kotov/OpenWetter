@@ -184,9 +184,18 @@ async function loadCoarseModels(ttlMs){
       if(!raw||typeof raw.manifest!=='string'||!raw.manifest.startsWith(id+'/')||raw.manifest.includes('..'))return;
       if(state.models[id]?.run===raw.run)return;
       state.models[id]=parseIconManifest(await fetchImmutableJSON(DATA_BASE+raw.manifest),raw.manifest);
+      void loadPrevious(id,raw.previous?.manifest);
     }catch{/* this model stays unavailable; DWD map images cover rain beyond ICON-D2 */}
   }));
   requestMap();updateChip();void refreshOwnSeries();
+}
+/** Run of `model` started 24 hours before the newest one (graphs: change since the previous day's forecast). */
+async function loadPrevious(model,path){
+  state.previous??={};
+  if(typeof path!=='string'||!path.startsWith(model+'/')||path.includes('..')){delete state.previous[model];return;}
+  if(state.previous[model]?.path===path)return;
+  try{state.previous[model]={path,manifest:parseIconManifest(await fetchImmutableJSON(DATA_BASE+path),path)};void refreshOwnSeries();}
+  catch{delete state.previous[model];}
 }
 async function loadIconRun({fresh=false}={}){
   const ttlMs=fresh?0:60_000;
@@ -196,6 +205,7 @@ async function loadIconRun({fresh=false}={}){
     const latest=parseLatest(raw);state.latest=latest;
     if(!latest.icon)throw new Error('no ICON-D2 run published');
     const dir=DATA_BASE+latest.icon.manifest.slice(0,latest.icon.manifest.lastIndexOf('/')+1);
+    void loadPrevious('icon_d2',latest.icon.previous);
     if(state.icon?.dir!==dir){state.icon=parseIconManifest(await fetchImmutableJSON(DATA_BASE+latest.icon.manifest),latest.icon.manifest);
       state.iconError=null;state.history=null;}
   }catch(error){state.iconError=error.message;if(!state.icon)toast('ICON-D2 maps unavailable: '+error.message,{error:true});}
@@ -286,8 +296,15 @@ function setPointBase(forecast){state.pointOM=forecast;state.point=forecast;stat
 let ownEpoch=0;
 async function refreshOwnSeries(){
   const base=state.pointOM;if(!base)return;
-  const manifests=[state.icon,...coarseManifests()].filter(Boolean);if(!manifests.length)return;
-  const place={...state.place},key=placeKey(place)+'|'+manifests.map(m=>m.model+'@'+m.run).join(',');
+  if(!state.icon&&!coarseManifests().length)return;
+  // ICON-D2: the newest run, then the history slices of earlier runs for the past hours.
+  if(state.icon&&!state.history)void loadHistory()?.then(()=>refreshOwnSeries());
+  const past=(state.history?.slices||[]).filter(m=>m.series&&m.runTime>=base.time[0]-6*3600);
+  const groups=[{model:'icon_d2',manifests:[state.icon,...past].filter(Boolean)},
+    ...coarseManifests().map(m=>({model:m.model,manifests:[m]}))].filter(g=>g.manifests.length);
+  const prev=['icon_d2','icon_eu','icon_global'].map(model=>({model,manifests:[state.previous?.[model]?.manifest].filter(Boolean)}))
+    .filter(g=>g.manifests.length);
+  const place={...state.place},key=placeKey(place)+'|'+[...groups,...prev].map(g=>g.model+'@'+g.manifests.map(m=>m.run).join('+')).join(',');
   if(state.ownKey===key)return;
   const epoch=++ownEpoch;
   const get=async url=>{
@@ -295,9 +312,9 @@ async function refreshOwnSeries(){
     if(!bytes){const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);bytes=await r.arrayBuffer();void weatherDiskCache.put('series',url,bytes);}
     return bytes;
   };
-  const own=await loadOwnSeries(manifests,place,base.time,get);
+  const [own,previous]=await Promise.all([loadOwnSeries(groups,place,base.time,get),loadOwnSeries(prev,place,base.time,get)]);
   if(epoch!==ownEpoch||state.pointOM!==base)return;
-  state.ownKey=key;state.point=applyOwnSeries(base,own);
+  state.ownKey=key;state.point=applyOwnSeries(base,own,previous);
   renderMeteo();updateReadout();
 }
 /** Forecast object the charts use: the stitched series, or one model only. */

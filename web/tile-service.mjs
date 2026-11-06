@@ -142,7 +142,8 @@ export function parseLatest(data){
   if(!data||data.schema!=='openwetter-tiles-2')throw new Error('Unsupported tile service pointer');
   const path=p=>typeof p==='string'&&/^[\w./-]+\.json$/.test(p)&&!p.includes('..')?p:null;
   const d2=data.icon_d2,manifest=path(d2?.manifest);
-  const icon=manifest?{run:d2.run,runTime:parseRunTime(d2.run),manifest}:null;
+  // `previous`: the run started 24 hours earlier (its chart series are kept for comparison).
+  const icon=manifest?{run:d2.run,runTime:parseRunTime(d2.run),manifest,previous:path(d2.previous?.manifest)}:null;
   // `history` is the path of the history index (icon_d2/history/index.json).
   return {generatedAt:data.generated_at,icon,history:path(d2?.history),
     radar:path(data.radar),nowcast:path(data.nowcast),warnings:path(data.warnings)};
@@ -244,6 +245,7 @@ export function parseIconManifest(data,manifestPath,{base=DATA_BASE}={}){
           const times=Array.isArray(x.lead_minutes)&&x.lead_minutes.length===x.frames&&x.lead_minutes.every(Number.isInteger)
             ?x.lead_minutes.map(m=>runTime+m*60):Array.from({length:x.frames},(_,i)=>first+i*x.step_minutes*60);
           return {name:x.name,frames:x.frames,step:x.step_minutes*60,first,times};})};
+    series.url=(x,y)=>dir+s.path.replace('{x}',x).replace('{y}',y);
   }
   return {kind:'icon',model:data.model,label:ICON_MODELS[data.model],run:data.run,runTime,generatedAt:data.generated_at,grid,tile:size,
     framesPerChunk:data.frames_per_chunk,dir,layers,series,source:data.source||'DWD '+ICON_MODELS[data.model]};
@@ -322,8 +324,18 @@ export function parseHistoryIndex(data,{base=DATA_BASE}={}){
     }
     if(!Object.keys(layers).length)continue;
     const runPath=path.replace('{run_key}',s.run_key);
+    // History series: the slice's first hours per 64-cell block, for the graphs' past hours.
+    let series=null;const hs=data.series,ss=s.series;
+    if(hs&&Number.isInteger(hs.tile)&&hs.tile>0&&typeof hs.path==='string'&&!hs.path.includes('..')&&!/^[a-z]+:/i.test(hs.path)&&ss&&Array.isArray(ss.layers)){
+      const seriesPath=hs.path.replace('{run_key}',s.run_key);
+      const layersS=ss.layers.filter(x=>typeof x?.name==='string'&&Number.isInteger(x.frames)&&x.frames>0&&Number.isInteger(x.step_minutes)&&Number.isInteger(x.first_step_minutes))
+        .map(x=>{const first=runTime+x.first_step_minutes*60;
+          return {name:x.name,frames:x.frames,step:x.step_minutes*60,first,times:Array.from({length:x.frames},(_,i)=>first+i*x.step_minutes*60)};});
+      series={tile:hs.tile,path:seriesPath,tiles:tileList(ss.tiles),layers:layersS,
+        url:(x,y)=>base+seriesPath.replace('{x}',x).replace('{y}',y)};
+    }
     out.push({kind:'icon',model:'icon_d2',label:'ICON-D2',history:true,run:s.run,runTime,generatedAt:data.generated_at,grid,tile:size,framesPerChunk:null,
-      dir:null,layers,series:null,source:data.source||'DWD ICON-D2',
+      dir:null,layers,series,source:data.source||'DWD ICON-D2',
       tileUrl:(layer,x,y)=>base+runPath.replace('{layer}',layer).replace('{x}',x).replace('{y}',y)});
   }
   return out.sort((a,b)=>b.runTime-a.runTime);
