@@ -14,7 +14,7 @@ Experimental Android and browser weather application. Real **Deutscher Wetterdie
 - Saved places, place search, units, and a customisable map layer bar and graph set.
 - Android API 26+ WebView shell with system status-bar cutout/inset handling.
 
-**Weather source distinction:** ICON-D2 maps are model forecasts; RADOLAN RY is observed radar; the RADVOR nowcast is a radar-based forecast. They are not interchangeable and the map label always names the source shown. ICON-EU and ICON Global are used for the graphs only (DWD ICON point forecasts via Open-Meteo); the maps are ICON-D2 and end with the newest ICON-D2 run (48 h).
+**Weather source distinction:** ICON-D2 maps are model forecasts; RADOLAN RY is observed radar; the RADVOR nowcast is a radar-based forecast. They are not interchangeable and the map label always names the source shown. Map layers come from ICON-D2 and end with the newest ICON-D2 run (48 h). Beyond that, the rain map uses DWD's public ICON-EU (1 h and 3 h totals) and ICON Global (6 h totals) map images from the same forecast run as the graphs; DWD draws these in fixed colour classes, so they show rain ranges, not exact values. The graphs use ICON-D2, ICON-EU and ICON Global point forecasts via Open-Meteo.
 
 ## Controls
 
