@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="theme-color" content="#10253a"/>
+  <meta name="description" content="OpenWetter: synchronized German ICON-D2 forecast maps, observed DWD radar, radar nowcast, warnings, model comparisons and gesture-controlled weather timelines."/>
+  <link rel="manifest" href="manifest.webmanifest"/>
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml"/>
+  <link rel="stylesheet" href="styles.css"/>
+  <title>OpenWetter — ICON Weather Explorer</title>
+</head>
+<body>
+<main class="app" id="appRoot">
+  <header class="topbar">
+    <div class="header-line">
+      <button class="header-icon" id="placesBtn" aria-label="Open saved places" aria-expanded="false" aria-controls="placesDrawer">☰</button>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">◉</span><div><strong>OpenWetter</strong><small id="headerPlace">Dortmund</small></div></div>
+      <div class="view-switch" role="group" aria-label="Forecast views">
+        <button id="viewForecast" class="switch-btn active" aria-pressed="true">Forecast</button>
+        <button id="viewCompare" class="switch-btn" aria-pressed="false">Compare <span class="desktop-word">models</span></button>
+      </div>
+      <button class="header-icon" id="settingsBtn" aria-label="Open settings" aria-expanded="false" aria-controls="settingsPanel" title="Settings">⚙</button>
+    </div>
+    <div class="header-controls">
+      <form id="searchForm" class="search" role="search">
+        <label for="citySearch" class="sr-only">Search location</label>
+        <span aria-hidden="true">⌕</span><input id="citySearch" type="search" placeholder="Find a town or city" value="Dortmund" autocomplete="off" />
+        <button type="submit" aria-label="Search location">↵</button>
+      </form>
+      <label class="sr-only" for="modelSelect">Selected German weather model</label>
+      <select id="modelSelect" aria-label="Weather model"><option value="icon_d2">ICON-D2 · 2 km</option><option value="icon_eu">ICON-EU · 7 km</option><option value="icon_global">ICON Global · 11 km</option></select>
+      <button class="header-icon geo-btn" id="locateBtn" aria-label="Use current location" title="Use current location">◎</button>
+    </div>
+  </header>
+
+  <section class="panel" aria-label="Forecast graphs and controls">
+    <div class="summary">
+      <div class="place-heading"><div class="eyebrow">DWD / ICON FORECAST <span class="live-indicator" aria-hidden="true"></span></div>
+        <h1 id="locationName">Dortmund, Germany</h1><p id="modelDescription">ICON-D2 • Germany + neighbours</p></div>
+      <div class="summary-now"><div id="heroTemp" class="hero-temp">—°</div><div id="heroTime" class="hero-time">Loading forecast…</div></div>
+    </div>
+    <div class="summary-values" id="summaryValues" aria-label="Selected time weather values"><span>Rain <b id="quickRain">—</b></span><span>Wind <b id="quickWind">—</b></span><span>Cloud <b id="quickCloud">—</b></span></div>
+    <div id="message" class="message" role="status" aria-live="polite"></div>
+    <div id="warningsList" class="warnings-list" aria-live="polite" hidden></div>
+    <div class="plot-toolbar"><strong id="plotsHeading">Forecast graphs · future model data</strong>
+      <div id="forecastHorizonButtons" class="horizon-buttons" role="group" aria-label="Forecast map time range"><button id="horizonPast" class="horizon" aria-pressed="false" title="Map of earlier ICON-D2 model runs, past 5 days (model, not observed)" aria-label="Past 5 days of earlier model runs" hidden>Past</button><button id="horizon48" class="horizon active" aria-pressed="true">48h</button><button id="horizon120" class="horizon" aria-pressed="false">5 days</button></div>
+      <div id="radarHistoryButtons" class="horizon-buttons" role="group" aria-label="Past observed radar history" hidden><button id="radarHours2" class="horizon" aria-pressed="false">Past 2h</button><button id="radarHours6" class="horizon active" aria-pressed="true">Past 6h</button><button id="radarHours48" class="horizon" aria-pressed="false">2 days</button></div>
+    </div>
+    <div id="graphStack" class="graph-stack" aria-label="Synchronized weather graphs"></div>
+    <div class="timeline">
+      <button id="playBtn" class="transport" aria-label="Play weather timeline" title="Play forecast">▶</button>
+      <div class="slider-zone"><div class="time-labels"><strong id="timeLabel">—</strong><span id="timeRange">Forecast · hour by hour</span></div>
+        <input id="timeSlider" type="range" min="0" max="48" step="1" value="0" aria-label="Weather time cursor" />
+        <div class="time-ends"><span id="startLabel">Now</span><span id="endLabel">+48h</span></div>
+      </div>
+    </div>
+    <div id="settingsPanel" class="settings" hidden>
+      <div class="setting-title"><strong>Gesture settings</strong><span>Right or upward swipe = later</span></div>
+      <label for="horizontalSpeed">Horizontal scrub <output id="horizontalOutput">4 h / 100 px</output></label>
+      <input id="horizontalSpeed" type="range" min="1" max="24" step="1" value="4" />
+      <label for="verticalSpeed">Vertical scrub <output id="verticalOutput">24 h / 100 px</output></label>
+      <input id="verticalSpeed" type="range" min="4" max="72" step="2" value="24" />
+      <p>One finger: lock to the first dominant direction. Vertical starts faster by default. Two fingers: pan or zoom the map. Swipe sensitivity is saved on this device.</p>
+      <label for="opacitySlider">Radar transparency <output id="opacityOutput">75%</output></label>
+      <input id="opacitySlider" type="range" min="10" max="100" step="5" value="75" />
+      <label for="cloudOpacitySlider">Cloud transparency <output id="cloudOpacityOutput">50%</output></label>
+      <input id="cloudOpacitySlider" type="range" min="10" max="100" step="5" value="50" />
+      <label class="smooth-frame-option" for="smoothFrames"><input id="smoothFrames" type="checkbox" checked/> Smooth weather frame transitions (260 ms)</label>
+      <div class="setting-title"><strong>Offline weather cache</strong><span>Download once, scrub without repeated transfers</span></div>
+      <button id="cacheRadarBtn" type="button" class="overlay-btn cache-download">Cache visible radar area (past 6 h)</button>
+      <button id="cacheForecastBtn" type="button" class="overlay-btn cache-download">Cache visible ICON-D2 layer (48 h)</button>
+      <p id="cacheProgress" class="cache-progress" role="status" aria-live="polite">Choose a cache download on Wi-Fi. Radar and forecast maps are also saved automatically as you view them.</p>
+    </div>
+    <div class="credit-line">Maps &amp; charts: <a href="https://opendata.dwd.de/" target="_blank" rel="noreferrer">DWD open data</a> (CC BY 4.0) via OpenWetter tiles · point forecast: <a href="https://open-meteo.com/en/docs/dwd-api" target="_blank" rel="noreferrer">Open-Meteo</a> · <a href="https://github.com/e-kotov/OpenWetter" target="_blank" rel="noreferrer">Code</a></div>
+  </section>
+
+  <section id="map" class="map" aria-label="Weather map: swipe right or up to move forward in time; two fingers to pan or zoom">
+    <div id="mapSurface" class="map-surface"><div id="baseTiles" class="tiles"></div><canvas id="iconCanvas" class="icon-grid-layer" aria-label="DWD ICON-D2 forecast map layer (or ICON-EU hourly rain)"></canvas><canvas id="iconTransitionCanvas" class="icon-grid-layer weather-crossfade forecast-crossfade" aria-hidden="true" hidden></canvas><div id="cloudTiles" class="tiles cloud-tiles" hidden></div><canvas id="radarCanvas" class="icon-grid-layer radar-canvas" aria-label="Observed DWD radar rain or radar-based nowcast"></canvas><canvas id="radarTransitionCanvas" class="icon-grid-layer radar-canvas weather-crossfade radar-crossfade" aria-hidden="true" hidden></canvas><canvas id="boundaryTransitionCanvas" class="icon-grid-layer boundary-weather-crossfade" aria-hidden="true" hidden></canvas><canvas id="warningsCanvas" class="icon-grid-layer warnings-canvas" aria-label="Active official DWD weather warning areas" hidden></canvas><div id="mapPin" class="map-pin"><span>⌖</span><b id="pinTemp">—</b></div></div>
+    <div class="map-label"><span class="map-dot"></span><span id="mapLayerName">FORECAST · model prediction</span><small id="mapModelName">Predicted by DWD ICON-D2</small></div>
+    <div class="map-mode" role="group" aria-label="Timeline mode"><button id="modeContinuous" class="mode-btn" aria-pressed="false">▶ Radar → nowcast → forecast</button><button id="modeForecast" class="mode-btn active" aria-pressed="true">◈ Forecast · future</button><button id="modeRadar" class="mode-btn" aria-pressed="false">◉ Radar · past 6h</button></div>
+    <div class="map-overlays native-overlays" role="group" aria-label="Map layer">
+      <button id="layersBtn" class="overlay-btn layers-btn" aria-expanded="false" aria-controls="layerPanel">▤ Layer: <span id="layersBtnLabel">Rain</span></button>
+    </div>
+    <div id="layerPanel" class="layer-panel" role="dialog" aria-label="Map layers" hidden>
+      <div class="layer-panel-head"><strong>Map layer</strong><button id="closeLayers" aria-label="Close layer menu">✕</button></div>
+      <div id="layerList" class="layer-list"></div>
+      <label class="layer-toggle" id="warningsToggleRow" hidden><input id="toggleWarnings" type="checkbox" checked/> Official DWD warnings (areas active at the selected time)</label>
+      <p class="layer-note">Observed radar, the radar-based nowcast and ICON-D2 model forecasts are different sources and are always labelled as such.</p>
+    </div>
+    <div id="mapLegend" class="map-legend" aria-live="polite" hidden></div>
+    <div class="map-overlays observations-overlays" role="group" aria-label="Live observed map overlays">
+      <button id="toggleRain" class="overlay-btn" aria-pressed="false" title="Overlay latest observed rain radar (not related to selected future forecast time)">📡 Latest radar · observed</button>
+      <button id="toggleClouds" class="overlay-btn" aria-pressed="false" title="Show actual satellite cloud observations (not forecast)">☁ Satellite · observed</button>
+    </div>
+    <div class="map-controls"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button><button id="resetView" aria-label="Recenter map">◎</button></div>
+    <div id="mapInstruction" class="map-instruction">Swipe ↔ slowly / ↕ quickly · two fingers to move map</div>
+    <div class="map-credit">© <a href="https://www.openstreetmap.org/copyright" rel="noreferrer" target="_blank">OpenStreetMap</a><span id="radarAttribution"></span></div>
+  </section>
+  <div class="drawer-scrim" id="drawerScrim" hidden></div>
+  <aside class="places-drawer" id="placesDrawer" aria-label="Saved weather locations" hidden>
+    <div class="drawer-title"><strong>Places</strong><button id="closePlaces" aria-label="Close saved places">✕</button></div>
+    <p>Your saved locations</p><div id="placesList" class="places-list"></div>
+    <button id="savePlace" class="save-place">☆ Save current place</button>
+    <div class="drawer-foot">Saved on this device · DWD forecast models only</div>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+[Unit]
+Description=OpenWetter: publish DWD radar (2 days), RADVOR nowcast and warnings to Cloudflare R2
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=openwetter
+Group=openwetter
+EnvironmentFile=/etc/openwetter/r2.env
+# "-" lets the next product run even if one fails; each step logs its own result.
+ExecStart=-/usr/bin/flock -w 600 /var/lib/openwetter/publish.lock /opt/openwetter/bin/icon-rs radar --publish --state /var/lib/openwetter/radar.json --max-uploads-month 150000
+ExecStart=-/usr/bin/flock -w 600 /var/lib/openwetter/publish.lock /opt/openwetter/bin/icon-rs nowcast --publish --state /var/lib/openwetter/nowcast.json --max-uploads-month 100000
+ExecStart=-/usr/bin/flock -w 600 /var/lib/openwetter/publish.lock /opt/openwetter/bin/icon-rs warnings --publish --state /var/lib/openwetter/warnings.json --max-uploads-month 30000
+StateDirectory=openwetter
+MemoryMax=180M
+MemorySwapMax=0
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

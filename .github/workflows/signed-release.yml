@@ -1,0 +1,139 @@
+name: Build independently signed Android APK
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New release tag, semantic version higher than every existing release (for example v0.0.1-alpha.2)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publish as prerelease'
+        type: boolean
+        required: true
+        default: true
+permissions:
+  contents: read
+jobs:
+  signed-release:
+    if: ${{ github.repository == 'e-kotov/OpenWetter' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tag and private signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || {
+            echo '::error::Release tag must be a semantic version (e.g. v0.1.0-beta.1)'; exit 1;
+          }
+          if [ "$(printf '%s' "$OPENWETTER_SIGNING_PASSPHRASE" | wc -c)" -lt 40 ]; then
+            echo '::error::Configure OPENWETTER_SIGNING_PASSPHRASE (40+ random characters) in GitHub Actions secrets first.'
+            exit 1
+          fi
+          if [ ! -s signing/openwetter-release.p12.gpg ] || [ ! -s signing/openwetter-release.pem ]; then
+            echo '::error::Run the Provision OpenWetter signing key workflow before signing a release.'
+            exit 1
+          fi
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" ]; then
+            echo '::error::Release tag already exists; choose a new version'
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo '::error::Release tag already exists; choose a new version'; exit 1
+          fi
+          # Releases must sort by version, never by date: the new tag has to be
+          # higher (semantic-version precedence) than every existing release.
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags.txt"
+          python3 - "$RELEASE_TAG" "$RUNNER_TEMP/tags.txt" <<'PYCODE'
+          import re,sys
+          def key(tag):
+              m=re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?',tag)
+              if not m: return None
+              core=tuple(int(x) for x in m.groups()[:3])
+              if m[4] is None: return core+((1,),)
+              ids=tuple((0,int(i),'') if i.isdigit() else (1,0,i) for i in m[4].split('.'))
+              return core+((0,)+ids,)
+          new=key(sys.argv[1])
+          older=[t for t in open(sys.argv[2]).read().split() if key(t) and key(t)>=new]
+          if older: sys.exit(f'::error::{sys.argv[1]} is not higher than existing release(s) {older}')
+          PYCODE
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
+      - name: Stamp chosen version into this build (without changing Git history)
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python - <<'PYCODE'
+          import os,re,pathlib
+          path=pathlib.Path('android/app/build.gradle.kts')
+          value=os.environ['RELEASE_TAG'].removeprefix('v')
+          run_number=int(os.environ['GITHUB_RUN_NUMBER'])
+          text=path.read_text()
+          text, n = re.subn(r'versionName\s*=\s*"[^"]+"',f'versionName = "{value}"',text)
+          if n!=1:raise RuntimeError('Cannot find exactly one versionName')
+          text, n = re.subn(r'versionCode\s*=\s*\d+',f'versionCode = {1000+run_number}',text)
+          if n!=1:raise RuntimeError('Cannot find exactly one versionCode')
+          path.write_text(text)
+          PYCODE
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK platform, build tools, and signer
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build unsigned release APK
+        run: gradle -p android :app:assembleRelease --stacktrace
+      - name: Decrypt and sign with the persistent private certificate
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          OPENWETTER_SIGNING_PASSPHRASE: ${{ secrets.OPENWETTER_SIGNING_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          PRIVATE_KEY="$RUNNER_TEMP/openwetter-release.p12"
+          trap 'rm -f "$PRIVATE_KEY" dist/aligned.apk' EXIT
+          bash tools/signing-key.sh decrypt signing "$PRIVATE_KEY"
+          APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$APK"
+          mkdir -p dist
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$APK" dist/aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks "$PRIVATE_KEY" \
+            --ks-key-alias openwetter \
+            --ks-pass env:OPENWETTER_SIGNING_PASSPHRASE \
+            --key-pass env:OPENWETTER_SIGNING_PASSPHRASE \
+            --out "dist/OpenWetter-$RELEASE_TAG.apk" dist/aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify \
+            --verbose --print-certs "dist/OpenWetter-$RELEASE_TAG.apk"
+          (cd dist && sha256sum "OpenWetter-$RELEASE_TAG.apk" > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwetter-signed-release
+          path: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish signed GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$PRERELEASE" = true ]; then extra+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" \
+            "dist/OpenWetter-${RELEASE_TAG}.apk" dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "OpenWetter $RELEASE_TAG" \
+            --notes-file .github/RELEASE_NOTES.md \
+            "${extra[@]}"

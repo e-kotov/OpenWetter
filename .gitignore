@@ -1,0 +1,13 @@
+.gradle/
+.idea/
+**/build/
+android/local.properties
+.DS_Store
+node_modules/
+__pycache__/
+*.pyc
+
+# Local only: plans, notes and backups (never committed)
+.private/
+# Browser test screenshots
+screenshots/
