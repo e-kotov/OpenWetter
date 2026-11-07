@@ -21,9 +21,14 @@ fn main() {
         Some("radar") => radar::run_radar(&args[2..]),
         Some("nowcast") => radar::run_nowcast(&args[2..]),
         Some("warnings") => warnings::run(&args[2..]),
+        Some("--version" | "version") => {
+            // OPENWETTER_COMMIT is set by the GitHub build; local builds say "local".
+            println!("icon-rs {} ({})", env!("CARGO_PKG_VERSION"), option_env!("OPENWETTER_COMMIT").unwrap_or("local"));
+            Ok(())
+        }
         // Backwards compatible: plain flags mean the ICON publisher.
         Some(a) if a.starts_with("--") => icon::run(&args[1..]),
-        _ => Err("usage: icon-rs (icon|radar|nowcast|warnings) (--out DIR | --publish) [--state FILE]".into()),
+        _ => Err("usage: icon-rs (icon|radar|nowcast|warnings) (--out DIR | --publish) [--state FILE] | icon-rs --version".into()),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");

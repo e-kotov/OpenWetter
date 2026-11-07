@@ -1,0 +1,89 @@
+name: Build OpenWetter publisher
+# Tests and builds the Rust publisher (tools/icon-rs) for x86_64 Linux (glibc 2.35, Ubuntu 22.04
+# and newer) on every change on main, and publishes it as the rolling "publisher" release:
+# icon-rs-x86_64-linux and SHA256SUMS, with a build provenance attestation. Servers running
+# deploy/openwetter-update.timer install a new build within the hour.
+on:
+  push:
+    branches: [main]
+    paths: ['tools/icon-rs/**', '.github/workflows/publisher.yml']
+  pull_request:
+    paths: ['tools/icon-rs/**', '.github/workflows/publisher.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publisher-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/icon-rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust and the zig linker (targets an older glibc)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add x86_64-unknown-linux-gnu
+          pip install ziglang cargo-zigbuild
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/icon-rs/target
+          key: icon-rs-${{ hashFiles('tools/icon-rs/Cargo.lock') }}
+      - name: Unit tests
+        run: cargo test --release
+      - name: Build for glibc 2.35
+        env:
+          OPENWETTER_COMMIT: ${{ github.sha }}
+        run: |
+          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.35
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/icon-rs dist/icon-rs-x86_64-linux
+          dist/icon-rs-x86_64-linux --version
+          (cd dist && sha256sum icon-rs-x86_64-linux > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: icon-rs-x86_64-linux
+          path: tools/icon-rs/dist/
+
+  release:
+    needs: build
+    if: github.repository == 'e-kotov/OpenWetter' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: icon-rs-x86_64-linux
+          path: dist
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/icon-rs-x86_64-linux
+      - name: Publish the rolling "publisher" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="Server program (tools/icon-rs) built from ${GITHUB_SHA}. Not the Android app. Servers with openwetter-update.timer install it automatically."
+          git tag -f publisher "$GITHUB_SHA"
+          git push -f origin refs/tags/publisher
+          if ! gh release view publisher >/dev/null 2>&1; then
+            gh release create publisher --prerelease --title "OpenWetter publisher (server program)" --notes "$notes" --verify-tag
+          fi
+          # Binary first, checksums last: an updater never sees checksums of a binary not yet uploaded.
+          gh release upload publisher dist/icon-rs-x86_64-linux --clobber
+          gh release upload publisher dist/SHA256SUMS --clobber
+          gh release edit publisher --notes "$notes" --prerelease

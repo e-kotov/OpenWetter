@@ -1,0 +1,21 @@
+[Unit]
+Description=OpenWetter: install the newest publisher build from the public GitHub release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=openwetter
+Group=openwetter
+# Wait for a running publish to finish, so the binary is swapped between jobs.
+ExecStart=/usr/bin/flock -w 1800 /var/lib/openwetter/publish.lock /opt/openwetter/bin/openwetter-update.sh
+TimeoutStartSec=45min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/openwetter/bin /var/lib/openwetter
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
