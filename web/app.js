@@ -2,7 +2,7 @@ import {DEFAULT_PLACES,clamp,wrappedLongitude,clampLatitude,mercator,unmercator,
 import {DATA_BASE,LAYER_INFO,PALETTE_STOPS,rainScalePosition,decodeCode,parseLatest,parseIconManifest,iconFrame,iconAdjacentChunk,chooseRun,
   parseHistoryIndex,parseRadarIndex,radarFrame,parseNowcastIndex,nowcastFrame,parseWarnings,activeWarnings,
   warningsCovering} from './tile-service.mjs';
-import {fetchPointer,fetchImmutableJSON,tileBlob} from './tile-loader.mjs';
+import {fetchPointer,fetchImmutableJSON,tileBlob,fetchBytes} from './tile-loader.mjs';
 import {createRasterRenderer,drawWindArrows,visibleFrameTiles} from './raster-renderer.mjs';
 import {weatherDiskCache} from './frame-cache.mjs';
 import {loadOwnSeries,applyOwnSeries} from './own-series.mjs';
@@ -309,7 +309,7 @@ async function refreshOwnSeries(){
   const epoch=++ownEpoch;
   const get=async url=>{
     let bytes=await weatherDiskCache.get('series',url);
-    if(!bytes){const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);bytes=await r.arrayBuffer();void weatherDiskCache.put('series',url,bytes);}
+    if(!bytes){bytes=await fetchBytes(url);void weatherDiskCache.put('series',url,bytes);}
     return bytes;
   };
   const [own,previous]=await Promise.all([loadOwnSeries(groups,place,base.time,get),loadOwnSeries(prev,place,base.time,get)]);

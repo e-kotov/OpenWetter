@@ -5,8 +5,14 @@
 //! regular lat/lon grid (ICON-D2 ~2 km over its whole domain; ICON-EU ~6.5 km and ICON Global
 //! ~13 km cropped to the same Germany-and-neighbours box), quantise to 8 bits and write lossless
 //! WebP map tiles (128 x 128 cells x up to 24 frames). The same values are also packed per
-//! 32 x 32-cell block into one gzip file with every layer and frame, so a chart for a tapped
+//! 32 x 32-cell block into one gzip with every layer and frame, so a chart for a tapped
 //! place needs a single download. ICON-D2 also keeps a 5-day history of 3-hour slices.
+//!
+//! Uploads are packed: a layer's tiles go back to back into one object per run, the series
+//! blocks into parts of at most 16 MB, a history slice into one object. The manifest lists
+//! every tile's size in pack order, so readers find a tile's byte range by adding up the sizes
+//! before it. A run takes a few dozen uploads instead of thousands (R2's free tier counts
+//! uploads); readers download the same bytes as with one file per tile.
 //!
 //! Lead times: ICON-D2 every 15 minutes (rain, snow) or hour to +48 h, every run (3-hourly).
 //! ICON-EU hourly to +78 h, then 3-hourly to +120 h, from the 00/06/12/18 UTC runs (the others
@@ -135,6 +141,8 @@ const SERIES: usize = 32; // chart block size in cells
 const HISTORY_TILE: usize = 256;
 const HISTORY_MINUTES: usize = 180; // DWD runs every 3 h, so each run supplies 3 h of history
 const FRAMES: usize = 24; // frames per tile image
+/// Chart series blocks are uploaded in parts of at most this size (the server's memory is small).
+const SERIES_PART_BYTES: usize = 16 << 20;
 
 /// How a layer's physical value is derived from its DWD fields and stored in 8 bits.
 #[derive(Clone, Copy, PartialEq)]
@@ -442,7 +450,16 @@ pub fn run(args: &[String]) -> Res<()> {
     let mut series_tiles = Vec::new();
     let mut series_bytes = 0;
     let mut series_keys: Vec<String> = Vec::new();
-    let mut batch = Vec::new();
+    let (mut part, mut parts) = (Vec::new(), Vec::<usize>::new());
+    let mut in_part = 0;
+    let mut flush = |part: &mut Vec<u8>, state: &mut State| -> Res<()> {
+        let key = format!("{}/{run_key}/series/{}.pack", model.id, series_keys.len());
+        state.count_uploads(1, max_uploads)?;
+        sink.put(&key, part, "application/octet-stream", IMMUTABLE)?;
+        series_keys.push(key);
+        part.clear();
+        Ok(())
+    };
     let mut block = vec![0u8; total_frames * SeriesFile::BLOCK];
     for sy in 0..series.by {
         for sx in 0..series.bx {
@@ -460,38 +477,46 @@ pub fn run(args: &[String]) -> Res<()> {
             gz.write_all(&body)?;
             let gz = gz.finish()?;
             series_bytes += gz.len();
-            series_tiles.push(json!([sx, sy]));
-            batch.push((format!("{}/{run_key}/series/{sx}_{sy}.bin.gz", model.id), gz));
-            if batch.len() >= 64 {
-                state.count_uploads(batch.len() as u64, max_uploads)?;
-                sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
-                series_keys.extend(batch.drain(..).map(|(k, _)| k));
+            if !part.is_empty() && part.len() + gz.len() > SERIES_PART_BYTES {
+                flush(&mut part, &mut state)?;
+                parts.push(in_part);
+                in_part = 0;
             }
+            series_tiles.push(json!([sx, sy, gz.len()]));
+            part.extend_from_slice(&gz);
+            in_part += 1;
         }
     }
-    state.count_uploads(batch.len() as u64, max_uploads)?;
-    sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
-    series_keys.extend(batch.drain(..).map(|(k, _)| k));
+    if !part.is_empty() {
+        flush(&mut part, &mut state)?;
+        parts.push(in_part);
+    }
+    drop(part);
     if model.history {
         // History series: the first 3 hours of every layer, in 64 x 64-cell blocks (a quarter
         // of the objects), so the graphs can show the past day from the same model.
-        let (n, bytes) = history_series(model, &grid, &series, &series_layers, &run_key, &sink, &mut state, max_uploads, &mut slice)?;
+        let (n, bytes) = history_series(&grid, &series, &series_layers, &mut slice)?;
         println!("history series: {n} blocks, {:.1} MB", bytes as f64 / 1e6);
+        let key = format!("{}/history/{run_key}/slice.pack", model.id);
+        state.count_uploads(1, max_uploads)?;
+        sink.put(&key, &slice.pack, "application/octet-stream", IMMUTABLE)?;
+        slice.keys.push(key);
+        slice.pack = Vec::new();
     }
     drop(series); // closing the unlinked scratch file frees its disk space
     t.upload += s.elapsed();
     println!("chart series: {} blocks, {:.1} MB, {:.0} s so far", series_tiles.len(), series_bytes as f64 / 1e6, started.elapsed().as_secs_f64());
 
     let manifest = json!({
-        "schema": "openwetter-tiles-2",
+        "schema": "openwetter-tiles-3",
         "source": format!("DWD {label} open data, CC BY 4.0 (https://opendata.dwd.de)"),
         "model": model.id, "run": run, "generated_at": unix_now(), "grid": grid_json,
         "tile": TILE, "frames_per_chunk": FRAMES,
         "encoding": {"format": "lossless WebP, grey (R=G=B), frames stacked top to bottom", "nodata": NODATA,
-                     "tiles": "[x, y, bytes]; tile path = layer/cNN/{x}_{y}.webp"},
+                     "tiles": "[x, y, bytes]; a layer's tiles lie back to back in its pack (layer.pack), chunk by chunk in manifest order, so a tile's offset is the sum of the sizes listed before it"},
         "layers": layers_manifest,
-        "series": {"tile": SERIES, "path": "series/{x}_{y}.bin.gz", "tiles": series_tiles, "layers": series_layers,
-                   "encoding": "gzip; for each layer in order: frames x h x w uint8 codes (same codes as the map), rows north to south; w, h smaller at the east/south edge"},
+        "series": {"tile": SERIES, "path": "series/{n}.pack", "parts": parts, "tiles": series_tiles, "layers": series_layers,
+                   "encoding": "blocks [x, y, bytes] back to back in parts (parts[n] blocks in series/{n}.pack, in order); each block gzip; for each layer in order: frames x h x w uint8 codes (same codes as the map), rows north to south; w, h smaller at the east/south edge"},
     });
     let manifest_key = format!("{}/{run_key}/manifest.json", model.id);
     state.count_uploads(1, max_uploads)?;
@@ -507,8 +532,9 @@ pub fn run(args: &[String]) -> Res<()> {
     if model.history {
         let mut history: Vec<Value> = state.v["history"].as_array().cloned().unwrap_or_default();
         history.retain(|h| h["run"] != run.as_str());
-        history.push(json!({"run": run, "run_key": run_key, "start": run_start, "keys": slice.keys, "layers": slice.layers,
-                            "series": {"tiles": slice.series_tiles, "layers": slice.series_layers}}));
+        let pack = slice.keys.iter().find(|k| k.ends_with("/slice.pack")).cloned();
+        history.push(json!({"run": run, "run_key": run_key, "start": run_start, "keys": slice.keys, "layers": slice.layers, "pack": pack,
+                            "series": {"tiles": slice.series_tiles, "layers": slice.series_layers, "offset": slice.series_offset}}));
         history.sort_by_key(|h| h["start"].as_i64());
         state.v["history"] = json!(history);
         write_history_index(&sink, &mut state, max_uploads)?;
@@ -553,27 +579,19 @@ struct Slice {
     keys: Vec<String>,
     layers: Map<String, Value>,
     bytes: usize,
-    /// History series blocks [x, y] and their layers.
+    /// History series blocks [x, y, bytes], their layers and their start in the pack.
     series_tiles: Vec<Value>,
     series_layers: Vec<Value>,
+    series_offset: usize,
+    /// The slice's map tiles, then its series blocks: one object per slice.
+    pack: Vec<u8>,
 }
 
 const HISTORY_SERIES: usize = 64;
 
-/// Write the first HISTORY_MINUTES of every layer per 64 x 64-cell block, assembled from the
-/// 32 x 32 blocks of the scratch file. Returns (blocks, bytes).
-#[allow(clippy::too_many_arguments)]
-fn history_series(
-    model: &Model,
-    grid: &Grid,
-    series: &SeriesFile,
-    series_layers: &[Value],
-    run_key: &str,
-    sink: &Sink,
-    state: &mut State,
-    max_uploads: u64,
-    slice: &mut Slice,
-) -> Res<(usize, usize)> {
+/// Append the first HISTORY_MINUTES of every layer per 64 x 64-cell block, assembled from the
+/// 32 x 32 blocks of the scratch file, to the slice's pack. Returns (blocks, bytes).
+fn history_series(grid: &Grid, series: &SeriesFile, series_layers: &[Value], slice: &mut Slice) -> Res<(usize, usize)> {
     // (global frame offset, frames kept) per layer
     let mut offset = 0;
     let mut parts = Vec::new();
@@ -586,7 +604,8 @@ fn history_series(
     }
     let (width, height) = (grid.width, grid.height);
     let mut frame = vec![0u8; SeriesFile::BLOCK];
-    let (mut batch, mut count, mut bytes) = (Vec::new(), 0, 0);
+    let (mut count, mut bytes) = (0, 0);
+    slice.series_offset = slice.pack.len();
     for hy in 0..height.div_ceil(HISTORY_SERIES) {
         for hx in 0..width.div_ceil(HISTORY_SERIES) {
             let (x0, y0) = (hx * HISTORY_SERIES, hy * HISTORY_SERIES);
@@ -619,18 +638,10 @@ fn history_series(
             let gz = gz.finish()?;
             bytes += gz.len();
             count += 1;
-            slice.series_tiles.push(json!([hx, hy]));
-            batch.push((format!("{}/history/{run_key}/series/{hx}_{hy}.bin.gz", model.id), gz));
-            if batch.len() >= 64 {
-                state.count_uploads(batch.len() as u64, max_uploads)?;
-                sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
-                slice.keys.extend(batch.drain(..).map(|(k, _)| k));
-            }
+            slice.series_tiles.push(json!([hx, hy, gz.len()]));
+            slice.pack.extend_from_slice(&gz);
         }
     }
-    state.count_uploads(batch.len() as u64, max_uploads)?;
-    sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
-    slice.keys.extend(batch.drain(..).map(|(k, _)| k));
     slice.bytes += bytes;
     Ok((count, bytes))
 }
@@ -720,14 +731,14 @@ fn write_history_index(sink: &Sink, state: &mut State, max_uploads: u64) -> Res<
         .into_iter()
         .flatten()
         .rev()
-        .map(|h| json!({"run": h["run"], "run_key": h["run_key"], "start": h["start"], "layers": h["layers"], "series": h["series"]}))
+        .map(|h| json!({"run": h["run"], "run_key": h["run_key"], "start": h["start"], "layers": h["layers"], "series": h["series"], "pack": h["pack"]}))
         .collect();
     let index = json!({
-        "schema": "openwetter-history-1",
+        "schema": "openwetter-history-2",
         "source": "DWD ICON-D2 open data, CC BY 4.0 (https://opendata.dwd.de)",
         "generated_at": unix_now(), "grid": state.v["grid"], "tile": HISTORY_TILE,
         "path": "icon_d2/history/{run_key}/{layer}/{x}_{y}.webp",
-        "encoding": "lossless WebP, grey (R=G=B), frames stacked top to bottom; per layer: frames from first_step_minutes after the run, every step_minutes; codes as in the run manifest",
+        "encoding": "lossless WebP, grey (R=G=B), frames stacked top to bottom; per layer: frames from first_step_minutes after the run, every step_minutes; codes as in the run manifest. Slices with a pack: each layer's tiles [x, y, bytes] lie back to back from the layer's offset, the series blocks from series.offset; older slices: one file per tile at path",
         "codes": codes, "slices": slices,
         "series": {"tile": HISTORY_SERIES, "path": "icon_d2/history/{run_key}/series/{x}_{y}.bin.gz",
                    "encoding": "gzip; for each layer of the slice in order: frames x h x w uint8 codes (as in the run manifest), rows north to south; w, h smaller at the east/south edge"},
@@ -774,6 +785,8 @@ fn publish_job(
     }
     let mut rgb = Vec::new();
     let mut chunks: Vec<Vec<Value>> = vec![Vec::new(); nl];
+    // One object per layer: its tiles back to back, chunk by chunk in manifest order.
+    let mut packs: Vec<Vec<u8>> = vec![Vec::new(); nl];
     let mut bytes_total = 0;
     let mut cell = vec![0f32; nf];
 
@@ -819,7 +832,7 @@ fn publish_job(
             let n = HISTORY_MINUTES / step_minutes;
             for (l, layer) in job.layers.iter().enumerate() {
                 let layer_frames = &frames[l * FRAMES * plane..(l * FRAMES + n) * plane];
-                let (mut batch, mut tiles) = (Vec::new(), Vec::new());
+                let (offset, mut tiles) = (slice.pack.len(), Vec::new());
                 for ty in 0..grid.height.div_ceil(HISTORY_TILE) {
                     for tx in 0..grid.width.div_ceil(HISTORY_TILE) {
                         let (w, h, data, nonzero) = tile_rgb(layer_frames, n, grid.width, grid.height, HISTORY_TILE, tx, ty, &mut rgb);
@@ -831,19 +844,15 @@ fn publish_job(
                         t.encode += s.elapsed();
                         tiles.push(json!([tx, ty, webp.len()]));
                         slice.bytes += webp.len();
-                        batch.push((format!("icon_d2/history/{run_key}/{}/{tx}_{ty}.webp", layer.name), webp));
+                        slice.pack.extend_from_slice(&webp);
                     }
                 }
-                state.count_uploads(batch.len() as u64, max_uploads)?;
-                sink.put_many(&batch, "image/webp", IMMUTABLE)?;
-                slice.keys.extend(batch.into_iter().map(|(k, _)| k));
                 slice.layers.insert(layer.name.to_owned(), json!({"step_minutes": step_minutes, "first_step_minutes": chunk_leads[0],
-                                                                  "frames": n, "tiles": tiles}));
+                                                                  "frames": n, "tiles": tiles, "offset": offset}));
             }
         }
         for (l, layer) in job.layers.iter().enumerate() {
             let layer_frames = &frames[l * FRAMES * plane..(l + 1) * FRAMES * plane];
-            let mut batch = Vec::new();
             let mut tiles = Vec::new();
             for ty in 0..grid.height.div_ceil(TILE) {
                 for tx in 0..grid.width.div_ceil(TILE) {
@@ -854,25 +863,26 @@ fn publish_job(
                     let s = Instant::now();
                     let webp = encode_lossless(&rgb, w as u32, (h * chunk_leads.len()) as u32)?;
                     t.encode += s.elapsed();
-                    let key = format!("{}/{run_key}/{}/c{chunk:02}/{tx}_{ty}.webp", model.id, layer.name);
                     tiles.push(json!([tx, ty, webp.len()]));
                     bytes_total += webp.len();
-                    batch.push((key, webp));
+                    packs[l].extend_from_slice(&webp);
                 }
             }
             chunks[l].push(json!({"chunk": chunk, "first_step_minutes": chunk_leads[0], "step_minutes": chunk_minutes,
                                   "frames": chunk_leads.len(), "tiles": tiles}));
-            state.count_uploads(batch.len() as u64, max_uploads)?;
-            let s = Instant::now();
-            sink.put_many(&batch, "image/webp", IMMUTABLE)?;
-            t.upload += s.elapsed();
-            keys.extend(batch.into_iter().map(|(k, _)| k));
         }
     }
 
     if job.series_only {
         return Ok((0, Vec::new()));
     }
+    let batch: Vec<(String, Vec<u8>)> = job.layers.iter().zip(packs)
+        .map(|(layer, pack)| (format!("{}/{run_key}/{}.pack", model.id, layer.name), pack)).collect();
+    state.count_uploads(batch.len() as u64, max_uploads)?;
+    let s = Instant::now();
+    sink.put_many(&batch, "application/octet-stream", IMMUTABLE)?;
+    t.upload += s.elapsed();
+    keys.extend(batch.into_iter().map(|(k, _)| k));
     let entries = job
         .layers
         .iter()
@@ -882,6 +892,7 @@ fn publish_job(
                 "step_minutes": step_minutes,
                 "fields": job.fields,
                 "missing_tile": if layer.code == Code::LogRate { "dry for the whole chunk, or outside the model" } else { "outside the model" },
+                "pack": format!("{}.pack", layer.name),
                 "code": layer.code.describe(),
                 "chunks": chunk_list,
             }))

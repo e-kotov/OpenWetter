@@ -6,7 +6,7 @@
  *   CacheStorage (frame-cache.mjs) and fetched at most once concurrently.
  */
 import {weatherDiskCache} from './frame-cache.mjs';
-import {isGzip} from './tile-service.mjs';
+import {isGzip,tileRange} from './tile-service.mjs';
 
 const MAX_PARALLEL=4;
 let active=0;
@@ -57,17 +57,30 @@ export async function fetchImmutableJSON(url){
   try{const value=await pending;jsonMemo.set(url,{immutable:true,value});return value;}
   catch(error){jsonMemo.delete(url);throw error;}
 }
+/** Bytes of an immutable file, or of one tile in a packed object
+ * (`url#bytes=first-last`, an HTTP range request). A server that ignores the
+ * range sends the whole object; the tile is cut out of it. */
+export async function fetchBytes(url,init={}){
+  const range=tileRange(url);
+  if(!range){
+    const response=await fetch(url,init);
+    if(!response.ok){const e=new Error('HTTP '+response.status);e.status=response.status;throw e;}
+    return response.arrayBuffer();
+  }
+  const response=await fetch(range.url,{...init,headers:{...init.headers,Range:`bytes=${range.first}-${range.last}`}});
+  if(!response.ok){const e=new Error('HTTP '+response.status);e.status=response.status;throw e;}
+  const bytes=await response.arrayBuffer(),length=range.last-range.first+1;
+  if(response.status===206){if(bytes.byteLength!==length)throw new Error('Short range response');return bytes;}
+  if(bytes.byteLength<=range.last)throw new Error('Packed object too short');
+  return bytes.slice(range.first,range.last+1);
+}
 /** Bytes of an immutable file; persistent disk cache, de-duplicated, capped. */
 export function immutableBytes(url,kind){
   if(inflight.has(url))return inflight.get(url);
   const job=(async()=>{
     const stored=await weatherDiskCache.get(kind,url);
     if(stored)return stored;
-    const bytes=await limited(async()=>{
-      const response=await fetch(url,{cache:'default'});
-      if(!response.ok){const e=new Error('HTTP '+response.status);e.status=response.status;throw e;}
-      return response.arrayBuffer();
-    });
+    const bytes=await limited(()=>fetchBytes(url,{cache:'default'}));
     await weatherDiskCache.put(kind,url,bytes);
     return bytes;
   })().finally(()=>inflight.delete(url));
