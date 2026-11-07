@@ -1,0 +1,27 @@
+[Unit]
+Description=OpenWetter: publish DWD ICON-EU (days 3-5) map layers and chart series to Cloudflare R2
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=openwetter
+Group=openwetter
+EnvironmentFile=/etc/openwetter/r2.env
+# flock: never run at the same time as the live (radar/nowcast/warnings) job on this small server.
+ExecStart=/usr/bin/flock -w 1200 /var/lib/openwetter/publish.lock /opt/openwetter/bin/icon-rs icon --model icon_eu --publish --state /var/lib/openwetter/state-icon_eu.json --grace-minutes 30 --max-uploads-month 70000 --live-dir /var/lib/openwetter
+StateDirectory=openwetter
+# Measured peak on Linux: ICON-EU 107 MB (with cloud levels), ICON Global 46 MB (only the cells of the region are kept).
+MemoryMax=180M
+MemorySwapMax=0
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=40min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
