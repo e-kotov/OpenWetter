@@ -3,10 +3,14 @@
  *
  * Service layout (https://openwetter-data.ekotov.pro):
  *   latest.json                    rolling pointer, short cache
- *   icon_d2/<runKey>/manifest.json immutable ICON-D2 run manifest
- *   icon_d2/<runKey>/<layer>/cNN/<x>_<y>.webp   lossless grey WebP chunk tiles
+ *   <model>/latest.json            pointer for icon_eu and icon_global
+ *   <model>/<runKey>/manifest.json immutable run manifest (icon_d2, icon_eu, icon_global)
+ *   <model>/<runKey>/<layer>.pack  a layer's lossless grey WebP chunk tiles, back to back
+ *   <model>/<runKey>/series/<n>.pack  point-series blocks, back to back
  *   icon_d2/history/index.json     3-hour slices of earlier runs (max-age 60)
- *   icon_d2/history/<runKey>/<layer>/<x>_<y>.webp   history slice tiles
+ *   icon_d2/history/<runKey>/slice.pack   a slice's map tiles and series blocks
+ * Runs published before the packs keep one file per tile (<layer>/cNN/<x>_<y>.webp,
+ * series/<x>_<y>.bin.gz, history/<runKey>/<layer>/<x>_<y>.webp).
  *   radar/index.json, nowcast/index.json, warnings/index.json  (max-age 60)
  * Codes are 8-bit; 255 = no data. Each layer has its own decode formula.
  */
@@ -213,10 +217,40 @@ const tileList=list=>{
   return m;
 };
 
+/* Packed objects: the publisher uploads a layer's tiles (or a run's series
+ * blocks, or a history slice) back to back in one object, so a run needs a few
+ * dozen uploads instead of thousands. Each tile is read with an HTTP range
+ * request; its offset is the sum of the sizes [x, y, bytes] listed before it.
+ * A tile's URL carries its range as `#bytes=first-last` (fetch drops the
+ * fragment, and every cache keeps one entry per tile). */
+const PACK_PATH=/^[\w./-]+\.pack$/;
+export const validPackPath=p=>typeof p==='string'&&PACK_PATH.test(p)&&!p.includes('..')&&!p.startsWith('/');
+/** Maps x_y -> ranged URL per list of [x, y, bytes] (in pack order, starting
+ * at byte `start`), or null when a size is missing. */
+export function packedUrls(url,lists,start=0){
+  if(!Number.isInteger(start)||start<0)return null;
+  let o=start;const out=[];
+  for(const list of lists){
+    const m=new Map();
+    for(const t of Array.isArray(list)?list:[]){
+      if(!Array.isArray(t)||!Number.isInteger(t[2])||t[2]<=0)return null;
+      m.set(t[0]+'_'+t[1],`${url}#bytes=${o}-${o+t[2]-1}`);o+=t[2];
+    }
+    out.push(m);
+  }
+  return out;
+}
+/** Byte range of a ranged tile URL, or null for a plain file. */
+export function tileRange(url){
+  const m=/#bytes=(\d+)-(\d+)$/.exec(url);
+  return m?{url:url.slice(0,m.index),first:Number(m[1]),last:Number(m[2])}:null;
+}
+
 /* ---------- ICON run manifests (ICON-D2, ICON-EU, ICON Global) ---------- */
 export const ICON_MODELS=Object.freeze({icon_d2:'ICON-D2',icon_eu:'ICON-EU',icon_global:'ICON'});
 export function parseIconManifest(data,manifestPath,{base=DATA_BASE}={}){
-  if(!data||data.schema!=='openwetter-tiles-2'||!ICON_MODELS[data.model]||typeof data.layers!=='object')
+  // -2: one file per tile; -3: packed objects (see packedUrls).
+  if(!data||!['openwetter-tiles-2','openwetter-tiles-3'].includes(data.schema)||!ICON_MODELS[data.model]||typeof data.layers!=='object')
     throw new Error('Unsupported ICON manifest');
   const runTime=parseRunTime(data.run);
   if(runTime==null)throw new Error('ICON-D2 manifest has no valid run time');
@@ -226,10 +260,13 @@ export function parseIconManifest(data,manifestPath,{base=DATA_BASE}={}){
   const layers={};
   for(const [name,l] of Object.entries(data.layers)){
     if(!LAYER_INFO[name]||!Number.isInteger(l?.step_minutes)||l.step_minutes<=0||!Array.isArray(l.chunks))continue;
+    // Offsets run over every listed chunk in manifest order, so compute them before filtering.
+    const packed=l.pack==null?null:validPackPath(l.pack)?packedUrls(dir+l.pack,l.chunks.map(c=>c?.tiles)):null;
+    if(l.pack!=null&&!packed)continue;
     // ICON-EU and ICON Global change from hourly to 3-hourly frames: each chunk has its own step.
-    const chunks=l.chunks.filter(c=>Number.isInteger(c?.chunk)&&Number.isInteger(c.first_step_minutes)&&Number.isInteger(c.frames)&&c.frames>0
+    const chunks=l.chunks.map((c,i)=>[c,packed?.[i]]).filter(([c])=>Number.isInteger(c?.chunk)&&Number.isInteger(c.first_step_minutes)&&Number.isInteger(c.frames)&&c.frames>0
         &&(c.step_minutes==null||Number.isInteger(c.step_minutes)&&c.step_minutes>0))
-      .map(c=>({chunk:c.chunk,first:runTime+c.first_step_minutes*60,frames:c.frames,step:(c.step_minutes??l.step_minutes)*60,tiles:tileList(c.tiles)}))
+      .map(([c,urls])=>({chunk:c.chunk,first:runTime+c.first_step_minutes*60,frames:c.frames,step:(c.step_minutes??l.step_minutes)*60,tiles:tileList(c.tiles),urls}))
       .sort((a,b)=>a.first-b.first);
     if(!chunks.length)continue;
     const last=chunks.at(-1);
@@ -245,7 +282,16 @@ export function parseIconManifest(data,manifestPath,{base=DATA_BASE}={}){
           const times=Array.isArray(x.lead_minutes)&&x.lead_minutes.length===x.frames&&x.lead_minutes.every(Number.isInteger)
             ?x.lead_minutes.map(m=>runTime+m*60):Array.from({length:x.frames},(_,i)=>first+i*x.step_minutes*60);
           return {name:x.name,frames:x.frames,step:x.step_minutes*60,first,times};})};
-    series.url=(x,y)=>dir+s.path.replace('{x}',x).replace('{y}',y);
+    if(Array.isArray(s.parts)){
+      // Packed: parts[n] blocks lie in series/{n}.pack, in the order listed.
+      const tiles=Array.isArray(s.tiles)?s.tiles:[],urls=new Map();let i=0,ok=s.path.includes('{n}');
+      s.parts.forEach((count,n)=>{
+        const path=s.path.replace('{n}',n),part=Number.isInteger(count)&&count>0&&validPackPath(path)?packedUrls(dir+path,[tiles.slice(i,i+count)]):null;
+        if(!part){ok=false;return;}
+        for(const [k,u] of part[0])urls.set(k,u);i+=count;
+      });
+      if(ok&&i===tiles.length)series.url=(x,y)=>urls.get(x+'_'+y);else series=null;
+    }else series.url=(x,y)=>dir+s.path.replace('{x}',x).replace('{y}',y);
   }
   return {kind:'icon',model:data.model,label:ICON_MODELS[data.model],run:data.run,runTime,generatedAt:data.generated_at,grid,tile:size,
     framesPerChunk:data.frames_per_chunk,dir,layers,series,source:data.source||'DWD '+ICON_MODELS[data.model]};
@@ -283,7 +329,7 @@ export function iconFrame(manifest,layer,time){
   return {source:'icon',model,label:manifest.label||ICON_MODELS[model],layer,time:frameTime,step:chunk.step,run:manifest.run,runTime:manifest.runTime,
     grid:manifest.grid,tile:manifest.tile,frames:chunk.frames,index,chunk:chunk.chunk,tiles:chunk.tiles,
     key:`${id}:${frameTime}`,
-    url:manifest.tileUrl?(x,y)=>manifest.tileUrl(layer,x,y):(x,y)=>`${manifest.dir}${layer}/c${pad}/${x}_${y}.webp`,
+    url:chunk.urls?(x,y)=>chunk.urls.get(x+'_'+y):manifest.tileUrl?(x,y)=>manifest.tileUrl(layer,x,y):(x,y)=>`${manifest.dir}${layer}/c${pad}/${x}_${y}.webp`,
     chunkKey:`${id}:c${pad}`};
 }
 /** Adjacent chunk descriptor (direction +1/-1) for lazy prefetch. */
@@ -305,7 +351,8 @@ export function chooseRun(manifests,layer,time){
  * chooseRun/iconFrame treat it like a run; `history: true` keeps its frame
  * keys apart from the full run's. Returned newest first. */
 export function parseHistoryIndex(data,{base=DATA_BASE}={}){
-  if(!data||data.schema!=='openwetter-history-1'||!Array.isArray(data.slices))throw new Error('Unsupported ICON-D2 history index');
+  // -2 adds packed slices (one object per slice); older slices keep one file per tile.
+  if(!data||!['openwetter-history-1','openwetter-history-2'].includes(data.schema)||!Array.isArray(data.slices))throw new Error('Unsupported ICON-D2 history index');
   const grid=parseGrid(data.grid),size=data.tile,path=data.path;
   if(!Number.isInteger(size)||size<8||size>2048)throw new Error('Invalid history tile size');
   if(typeof path!=='string'||!['{run_key}','{layer}','{x}','{y}'].every(k=>path.includes(k))||path.includes('..')||/^[a-z]+:/i.test(path))
@@ -314,12 +361,16 @@ export function parseHistoryIndex(data,{base=DATA_BASE}={}){
   for(const s of data.slices){
     const runTime=parseRunTime(s?.run);
     if(runTime==null||typeof s.run_key!=='string'||!/^[\w-]+$/.test(s.run_key)||typeof s.layers!=='object'||!s.layers)continue;
+    if(s.pack!=null&&!validPackPath(s.pack))continue;
+    const pack=s.pack!=null?base+s.pack:null;
     const layers={};
     for(const [name,l] of Object.entries(s.layers)){
       if(!LAYER_INFO[name]||!Number.isInteger(l?.step_minutes)||l.step_minutes<=0||!Number.isInteger(l.first_step_minutes)||
         l.first_step_minutes<0||!Number.isInteger(l.frames)||l.frames<1)continue;
       const step=l.step_minutes*60,first=runTime+l.first_step_minutes*60;
-      layers[name]={name,step,chunks:[{chunk:0,first,frames:l.frames,step,tiles:tileList(l.tiles)}],
+      const urls=pack?packedUrls(pack,[l.tiles],l.offset)?.[0]:undefined;
+      if(pack&&!urls)continue;
+      layers[name]={name,step,chunks:[{chunk:0,first,frames:l.frames,step,tiles:tileList(l.tiles),urls}],
         start:first,end:first+(l.frames-1)*step,period:LAYER_INFO[name].kind==='rate',code:data.codes?.[name]||{},missingTile:''};
     }
     if(!Object.keys(layers).length)continue;
@@ -331,8 +382,9 @@ export function parseHistoryIndex(data,{base=DATA_BASE}={}){
       const layersS=ss.layers.filter(x=>typeof x?.name==='string'&&Number.isInteger(x.frames)&&x.frames>0&&Number.isInteger(x.step_minutes)&&Number.isInteger(x.first_step_minutes))
         .map(x=>{const first=runTime+x.first_step_minutes*60;
           return {name:x.name,frames:x.frames,step:x.step_minutes*60,first,times:Array.from({length:x.frames},(_,i)=>first+i*x.step_minutes*60)};});
-      series={tile:hs.tile,path:seriesPath,tiles:tileList(ss.tiles),layers:layersS,
-        url:(x,y)=>base+seriesPath.replace('{x}',x).replace('{y}',y)};
+      const urls=pack?packedUrls(pack,[ss.tiles],ss.offset)?.[0]:null;
+      series=pack&&!urls?null:{tile:hs.tile,path:seriesPath,tiles:tileList(ss.tiles),layers:layersS,
+        url:urls?(x,y)=>urls.get(x+'_'+y):(x,y)=>base+seriesPath.replace('{x}',x).replace('{y}',y)};
     }
     out.push({kind:'icon',model:'icon_d2',label:'ICON-D2',history:true,run:s.run,runTime,generatedAt:data.generated_at,grid,tile:size,framesPerChunk:null,
       dir:null,layers,series,source:data.source||'DWD ICON-D2',
